@@ -12,51 +12,63 @@ using UnityEngine.SceneManagement;
 // ===============================================
 public class PlaceholderSwitcher : EditorWindow
 {
-    // --- Input options ---
+    // ---------- Inputs ----------
     [SerializeField] private string prefix = "SS_";
     [SerializeField] private GameObject targetPrefab = null;
     [SerializeField] private string forcedName = "";
-    [SerializeField] private bool useIncrementalNaming = false;
+    [SerializeField] private bool useIncrementalNaming = false; // _001, _002 per base name
 
-    // --- Transform options ---
-    private enum RotationMode { Offset, Absolute }
-    [SerializeField] private RotationMode rotationMode = RotationMode.Offset;
-    [SerializeField] private Vector3 rotationEuler = Vector3.zero; // degrees
-    [SerializeField] private float scaleFactor = 1f;               // final = placeholder.localScale * scaleFactor
+    // ---------- Rotation ----------
+    private enum RotationMode { PlaceholderRotation, NewRotation, SeedValueOnY }
+    [SerializeField] private RotationMode rotationMode = RotationMode.PlaceholderRotation;
+    [SerializeField] private Vector3 rotationEuler = Vector3.zero; // for PlaceholderRotation or NewRotation
+    [SerializeField] private int rotationSeed = 1234;              // 1..10000 (used only in SeedValueOnY)
 
-    // --- Parenting options ---
-    [SerializeField] private Transform explicitParent = null;  // overrides grouping if set
+    // ---------- Scale ----------
+    private enum ScaleMode { PlaceholderScale, NewScale, SeedValue }
+    [SerializeField] private ScaleMode scaleMode = ScaleMode.PlaceholderScale;
+    [SerializeField] private Vector3 scaleXYZ = Vector3.one;       // per-axis UI value
+    [SerializeField] private int scaleSeed = 321;                  // 1..1000 (used only in SeedValue)
+    [SerializeField] private float scaleRandomMin = 0.8f;          // min uniform factor
+    [SerializeField] private float scaleRandomMax = 1.2f;          // max uniform factor
+
+    // ---------- Parenting ----------
+    [SerializeField] private Transform explicitParent = null;
     [SerializeField] private bool groupWithEmptyParent = false;
     [SerializeField] private string groupParentName = "Imported Placeholders";
     private enum EmptyParentLocation { FirstObject, BoundsCenter, WorldOrigin, Manual, SelectedObject }
     [SerializeField] private EmptyParentLocation emptyParentLocation = EmptyParentLocation.FirstObject;
     [SerializeField] private Vector3 manualEmptyParentPosition = Vector3.zero;
 
-    // --- Combine options ---
+    // ---------- Combine ----------
     [SerializeField] private bool combineIntoOne = false; // static only
     private enum PivotMode { Parent, FirstObject, BoundsCenter, WorldOrigin, SelectedObject }
     [SerializeField] private PivotMode pivotMode = PivotMode.Parent;
 
-    // --- Move options ---
+    // ---------- Move ----------
     [SerializeField] private bool moveToWorldCoordinates = false;
     [SerializeField] private Vector3 moveTargetPosition = Vector3.zero;
 
-    // --- Collision / Save options ---
+    // ---------- Collision / Save ----------
     [SerializeField] private bool rebuildInstancedCollision = false;
     [SerializeField] private bool saveAsNewPrefab = false;
     [SerializeField] private string savePath = "Assets/CombinedPlaceholder.prefab";
 
-    // --- Preview ---
+    // ---------- Preview ----------
+    private enum PreviewBg { White, Gray, Scene }
+    [SerializeField] private PreviewBg previewBackground = PreviewBg.White;
+
     private PreviewRenderUtility previewUtil;
     private float previewYaw = -30f;
     private float previewPitch = 15f;
-    private float previewDistance = 1.6f; // closer default
+    private float previewDistance = 1.6f;
     private bool previewUserAdjusted = false;
     private Mesh previewMesh;
     private Material[] previewMats;
     private Material fallbackMat;
+    private Vector3 previewPivotOffset = Vector3.zero; // for panning
 
-    // --- Internal state ---
+    // ---------- State ----------
     private readonly Dictionary<Scene, Transform> _groupParentByScene = new Dictionary<Scene, Transform>();
     private readonly Dictionary<string, int> _nameCounters = new Dictionary<string, int>();
 
@@ -64,39 +76,113 @@ public class PlaceholderSwitcher : EditorWindow
     public static void ShowWindow()
     {
         var w = GetWindow<PlaceholderSwitcher>(true, "Placeholder Switcher");
-        w.minSize = new Vector2(740, 700);
+        w.minSize = new Vector2(900, 700);
         w.Show();
     }
 
     private void OnEnable() => InitPreview();
     private void OnDisable() => CleanupPreview();
 
+    private void InitPreview()
+    {
+        previewUtil = new PreviewRenderUtility(true);
+        previewUtil.cameraFieldOfView = 30f;
+        previewUtil.lights[0].intensity = 1.2f;
+        previewUtil.lights[1].intensity = 0.8f;
+        fallbackMat = new Material(Shader.Find("Standard"));
+        ApplyPreviewBackground();
+    }
+
+    private void CleanupPreview()
+    {
+        previewUtil?.Cleanup();
+        if (fallbackMat != null) DestroyImmediate(fallbackMat);
+    }
+
+    // ------------------------------------------------------
+    // UI
+    // ------------------------------------------------------
     private void OnGUI()
     {
-        GUILayout.Label("Replace Object Placeholders", EditorStyles.boldLabel);
-        EditorGUILayout.HelpBox(
-            "Combining meshes bakes many objects into ONE renderer. Per-object scripts, colliders, triggers, and events are lost. " +
-            "If you need interactivity, avoid combining and consider Static Batching instead.",
-            MessageType.Warning);
+        // Split: Preview (left) | Controls (right)
+        EditorGUILayout.BeginHorizontal();
 
-        EditorGUILayout.Space(6);
+        // -------- Left: Preview column --------
+        EditorGUILayout.BeginVertical(GUILayout.Width(Mathf.Max(position.width * 0.42f, 360f)));
+        DrawPreviewArea(); // includes background/selectors + controls under the viewport
+        EditorGUILayout.EndVertical();
+
+        // -------- Right: Controls column --------
+        EditorGUILayout.BeginVertical();
+        DrawControls();
+        EditorGUILayout.EndVertical();
+
+        EditorGUILayout.EndHorizontal();
+    }
+
+    private void DrawControls()
+    {
+        GUILayout.Label("Replace Object Placeholders", EditorStyles.boldLabel);
 
         // Inputs
         prefix = EditorGUILayout.TextField(new GUIContent("Placeholder Prefix", "e.g. 'SS_'"), prefix);
-        targetPrefab = (GameObject)EditorGUILayout.ObjectField(new GUIContent("Desired Asset (Prefab)", "Prefab to instantiate"), targetPrefab, typeof(GameObject), false);
-        forcedName = EditorGUILayout.TextField(new GUIContent("Forced Name (optional)", "Base name for new instances / combined object"), forcedName);
-        useIncrementalNaming = EditorGUILayout.Toggle(new GUIContent("Use incremental naming", "Appends _001, _002, ..."), useIncrementalNaming);
+        targetPrefab = (GameObject)EditorGUILayout.ObjectField(new GUIContent("Desired Asset (Prefab)"), targetPrefab, typeof(GameObject), false);
+        forcedName = EditorGUILayout.TextField(new GUIContent("Forced Name (optional)"), forcedName);
+        useIncrementalNaming = EditorGUILayout.Toggle(new GUIContent("Use incremental naming", "Names like Base_001, Base_002…"), useIncrementalNaming);
 
-        EditorGUILayout.Space(4);
+        EditorGUILayout.Space(6);
 
-        // Transform
-        rotationMode = (RotationMode)EditorGUILayout.EnumPopup(new GUIContent("Rotation Mode", "Offset = placeholder rot + this. Absolute = ignore placeholder rot."), rotationMode);
-        rotationEuler = EditorGUILayout.Vector3Field(new GUIContent("Rotation (Euler °)"), rotationEuler);
-        scaleFactor = Mathf.Max(0.0001f, EditorGUILayout.FloatField(new GUIContent("Scale", "Final scale = placeholder scale × this"), scaleFactor));
+        // Rotation
+        GUILayout.Label("Rotation", EditorStyles.boldLabel);
+        rotationMode = (RotationMode)EditorGUILayout.EnumPopup(new GUIContent("Rotation Mode"), rotationMode);
+        if (rotationMode == RotationMode.PlaceholderRotation || rotationMode == RotationMode.NewRotation)
+        {
+            rotationEuler = EditorGUILayout.Vector3Field(new GUIContent(rotationMode == RotationMode.PlaceholderRotation ? "Rotation (adds to placeholder)" : "Rotation (new rotation)"), rotationEuler);
+        }
+        else // SeedValueOnY
+        {
+            using (new EditorGUI.IndentLevelScope())
+            {
+                EditorGUILayout.BeginHorizontal();
+                rotationSeed = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Random rotation seed (Y)"), rotationSeed), 1, 10000);
+                if (GUILayout.Button("Randomise Seed", GUILayout.Width(130)))
+                {
+                    rotationSeed = UnityEngine.Random.Range(1, 10001);
+                }
+                EditorGUILayout.EndHorizontal();
+                EditorGUILayout.HelpBox("Applies a deterministic random Y rotation per object using the seed.", MessageType.Info);
+            }
+        }
 
-        EditorGUILayout.Space(4);
+        EditorGUILayout.Space(6);
+
+        // Scale
+        GUILayout.Label("Scale", EditorStyles.boldLabel);
+        scaleMode = (ScaleMode)EditorGUILayout.EnumPopup(new GUIContent("Scaling Mode"), scaleMode);
+
+        if (scaleMode == ScaleMode.PlaceholderScale || scaleMode == ScaleMode.NewScale)
+        {
+            scaleXYZ = EditorGUILayout.Vector3Field(new GUIContent(scaleMode == ScaleMode.PlaceholderScale ? "Scale (multiplies placeholder scale)" : "Scale (new)"), scaleXYZ);
+        }
+        else // SeedValue
+        {
+            using (new EditorGUI.IndentLevelScope())
+            {
+                scaleSeed = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Random scaling seed"), scaleSeed), 1, 1000);
+                EditorGUILayout.BeginHorizontal();
+                scaleRandomMin = EditorGUILayout.FloatField(new GUIContent("Random Scaling threshold (min)"), scaleRandomMin);
+                scaleRandomMax = EditorGUILayout.FloatField(new GUIContent("max"), scaleRandomMax);
+                EditorGUILayout.EndHorizontal();
+                scaleRandomMin = Mathf.Max(0.0001f, scaleRandomMin);
+                scaleRandomMax = Mathf.Max(scaleRandomMin, scaleRandomMax);
+                EditorGUILayout.HelpBox("Generates a single uniform scale factor (applied to X/Y/Z together) per object using the seed.", MessageType.Info);
+            }
+        }
+
+        EditorGUILayout.Space(6);
 
         // Parenting
+        GUILayout.Label("Parenting", EditorStyles.boldLabel);
         using (new EditorGUI.DisabledScope(groupWithEmptyParent))
         {
             var newParent = (Transform)EditorGUILayout.ObjectField(new GUIContent("Parent", "If set, disables grouping"), explicitParent, typeof(Transform), true);
@@ -106,8 +192,7 @@ public class PlaceholderSwitcher : EditorWindow
                 if (explicitParent != null) groupWithEmptyParent = false;
             }
         }
-
-        groupWithEmptyParent = EditorGUILayout.Toggle(new GUIContent("Group with New Empty Parent", "Create or reuse an empty parent per scene"), groupWithEmptyParent);
+        groupWithEmptyParent = EditorGUILayout.Toggle(new GUIContent("Group with New Empty Parent"), groupWithEmptyParent);
         if (groupWithEmptyParent && explicitParent != null) explicitParent = null;
 
         using (new EditorGUI.DisabledScope(!groupWithEmptyParent))
@@ -120,23 +205,28 @@ public class PlaceholderSwitcher : EditorWindow
             EditorGUI.indentLevel--;
         }
 
-        EditorGUILayout.Space(4);
+        EditorGUILayout.Space(6);
 
         // Combine
+        GUILayout.Label("Combine / Save", EditorStyles.boldLabel);
         combineIntoOne = EditorGUILayout.Toggle(new GUIContent("Combine objects into one", "Static content only"), combineIntoOne);
         using (new EditorGUI.DisabledScope(!combineIntoOne))
         {
             EditorGUI.indentLevel++;
-            pivotMode = (PivotMode)EditorGUILayout.EnumPopup(new GUIContent("Pivot", "Origin for the combined object AND preview centering"), pivotMode);
+            pivotMode = (PivotMode)EditorGUILayout.EnumPopup(new GUIContent("Pivot (also affects preview centering)"), pivotMode);
             if ((pivotMode == PivotMode.SelectedObject) && Selection.activeTransform == null)
                 EditorGUILayout.HelpBox("Select a Transform in the hierarchy to use as the pivot.", MessageType.Info);
             EditorGUI.indentLevel--;
+            if (combineIntoOne)
+            {
+                EditorGUILayout.HelpBox(
+                    "Combining meshes creates ONE renderer/mesh. Per-object scripts, colliders, and triggers are lost.\n" +
+                    "Use Static Batching if you need separate interactivity.", MessageType.Warning);
+            }
         }
 
-        EditorGUILayout.Space(4);
-
         // Move
-        moveToWorldCoordinates = EditorGUILayout.Toggle(new GUIContent("Move to world coordinates", "After replacement/combining, move result to position"), moveToWorldCoordinates);
+        moveToWorldCoordinates = EditorGUILayout.Toggle(new GUIContent("Move to world coordinates"), moveToWorldCoordinates);
         using (new EditorGUI.DisabledScope(!moveToWorldCoordinates))
         {
             EditorGUI.indentLevel++;
@@ -144,12 +234,8 @@ public class PlaceholderSwitcher : EditorWindow
             EditorGUI.indentLevel--;
         }
 
-        EditorGUILayout.Space(4);
-
         // Collision
-        rebuildInstancedCollision = EditorGUILayout.Toggle(new GUIContent("Rebuild instanced collision", "Reattach your instanced collider script or use MeshCollider"), rebuildInstancedCollision);
-
-        EditorGUILayout.Space(4);
+        rebuildInstancedCollision = EditorGUILayout.Toggle(new GUIContent("Rebuild instanced collision"), rebuildInstancedCollision);
 
         // Save
         saveAsNewPrefab = EditorGUILayout.Toggle(new GUIContent("Save as new prefab"), saveAsNewPrefab);
@@ -170,38 +256,63 @@ public class PlaceholderSwitcher : EditorWindow
             EditorGUI.indentLevel--;
         }
 
-        EditorGUILayout.Space(10);
+        EditorGUILayout.Space(8);
 
         using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(prefix) || targetPrefab == null || !IsPrefabAsset(targetPrefab)))
         {
-            if (GUILayout.Button("Switch Placeholders", GUILayout.Height(34)))
+            if (GUILayout.Button("Switch Placeholders", GUILayout.Height(36)))
                 RunReplace();
         }
 
         if (targetPrefab != null && !IsPrefabAsset(targetPrefab))
-            EditorGUILayout.HelpBox("Selected object is not a Prefab asset. Drag from Project window.", MessageType.Warning);
+            EditorGUILayout.HelpBox("Selected object is not a Prefab asset. Drag a prefab from the Project window.", MessageType.Warning);
         else if (string.IsNullOrEmpty(prefix))
             EditorGUILayout.HelpBox("Enter a placeholder prefix (e.g. 'SS_').", MessageType.Info);
-
-        DrawPreview();
     }
 
-    // ---------------- PREVIEW ----------------
-    private void InitPreview()
+    // ------------------------------------------------------
+    // Preview Area (left)
+    // ------------------------------------------------------
+    private void DrawPreviewArea()
     {
-        previewUtil = new PreviewRenderUtility(true);
-        previewUtil.cameraFieldOfView = 30f;
-        previewUtil.lights[0].intensity = 1.2f;
-        previewUtil.lights[1].intensity = 0.8f;
-        previewUtil.camera.backgroundColor = Color.white;     // plain white
-        previewUtil.camera.clearFlags = CameraClearFlags.Color;
-        fallbackMat = new Material(Shader.Find("Standard"));
+        // Viewport
+        var rect = GUILayoutUtility.GetRect(10, 10, 360, 360);
+        DrawPreview(rect);
+
+        // Background selector + small tips
+        EditorGUILayout.Space(4);
+        previewBackground = (PreviewBg)EditorGUILayout.EnumPopup(new GUIContent("Viewer Background"), previewBackground);
+        ApplyPreviewBackground();
+        EditorGUILayout.LabelField("Controls", "LMB: Orbit   MMB: Pan   Wheel: Zoom", EditorStyles.miniLabel);
     }
 
-    private void CleanupPreview()
+    private void ApplyPreviewBackground()
     {
-        previewUtil?.Cleanup();
-        if (fallbackMat != null) DestroyImmediate(fallbackMat);
+        if (previewUtil == null) return;
+        var cam = previewUtil.camera;
+        switch (previewBackground)
+        {
+            default:
+            case PreviewBg.White:
+                cam.clearFlags = CameraClearFlags.Color;
+                cam.backgroundColor = Color.white;
+                break;
+            case PreviewBg.Gray:
+                cam.clearFlags = CameraClearFlags.Color;
+                cam.backgroundColor = new Color(0.22f, 0.22f, 0.22f, 1f);
+                break;
+            case PreviewBg.Scene:
+                if (RenderSettings.skybox != null)
+                {
+                    cam.clearFlags = CameraClearFlags.Skybox;
+                }
+                else
+                {
+                    cam.clearFlags = CameraClearFlags.Color;
+                    cam.backgroundColor = RenderSettings.ambientLight;
+                }
+                break;
+        }
     }
 
     private void RefreshPreviewMesh()
@@ -214,24 +325,23 @@ public class PlaceholderSwitcher : EditorWindow
         if (mr != null && mr.sharedMaterials != null && mr.sharedMaterials.Length > 0) previewMats = mr.sharedMaterials;
     }
 
-    private void DrawPreview()
+    private void DrawPreview(Rect rect)
     {
         if (previewUtil == null) return;
-        var rect = GUILayoutUtility.GetRect(10, 10, 280, 280);
 
         RefreshPreviewMesh();
 
-        // Find placeholders to preview
+        // Collect placeholders to preview
         var candidates = Resources.FindObjectsOfTypeAll<Transform>()
             .Where(t => t && t.gameObject.scene.IsValid() && t.gameObject.name.StartsWith(prefix))
             .Select(t => t.gameObject)
             .Take(400)
             .ToList();
 
-        // Determine pivot point for preview camera
-        var previewPivot = GetPreviewPivot(candidates);
+        // Determine pivot for camera framing
+        var previewPivot = GetPreviewPivot(candidates) + previewPivotOffset;
 
-        // Auto-fit distance (unless user touched the camera)
+        // Auto-fit distance unless user adjusted
         if (!previewUserAdjusted)
         {
             var mesh = previewMesh != null ? previewMesh : Resources.GetBuiltinResource<Mesh>("Cube.fbx");
@@ -241,22 +351,16 @@ public class PlaceholderSwitcher : EditorWindow
                 foreach (var go in candidates)
                 {
                     if (!go) continue;
-                    var rot = (rotationMode == RotationMode.Offset)
-                        ? go.transform.rotation * Quaternion.Euler(rotationEuler)
-                        : Quaternion.Euler(rotationEuler);
-                    var scl = go.transform.localScale * scaleFactor;
+                    var rot = GetPreviewObjectRotation(go.transform);
+                    var scl = GetPreviewObjectScale(go.transform);
                     boundsWS.Encapsulate(TransformBounds(mesh.bounds, go.transform.position, rot, scl));
                 }
                 var halfFovRad = previewUtil.cameraFieldOfView * 0.5f * Mathf.Deg2Rad;
                 var radius = Mathf.Max(boundsWS.extents.x, boundsWS.extents.y, boundsWS.extents.z);
                 previewDistance = Mathf.Clamp(radius / Mathf.Tan(halfFovRad) + radius * 0.25f, 0.4f, 2000f);
-                // If pivot mode is BoundsCenter, recentre to that too
-                if (pivotMode == PivotMode.BoundsCenter) previewPivot = boundsWS.center;
+                if (pivotMode == PivotMode.BoundsCenter) previewPivot = boundsWS.center + previewPivotOffset;
             }
-            else
-            {
-                previewDistance = 1.6f;
-            }
+            else previewDistance = 1.4f;
         }
 
         if (Event.current.type == EventType.Repaint)
@@ -282,10 +386,8 @@ public class PlaceholderSwitcher : EditorWindow
                 foreach (var go in candidates)
                 {
                     if (!go) continue;
-                    var rotObj = (rotationMode == RotationMode.Offset)
-                        ? go.transform.rotation * Quaternion.Euler(rotationEuler)
-                        : Quaternion.Euler(rotationEuler);
-                    var trs = Matrix4x4.TRS(go.transform.position, rotObj, go.transform.localScale * scaleFactor);
+                    var rotObj = GetPreviewObjectRotation(go.transform);
+                    var trs = Matrix4x4.TRS(go.transform.position, rotObj, GetPreviewObjectScale(go.transform));
                     for (int si = 0; si < Mathf.Min(mesh.subMeshCount, mats.Length); si++)
                         previewUtil.DrawMesh(mesh, trs, mats[si] ? mats[si] : fallbackMat, si);
                 }
@@ -296,22 +398,75 @@ public class PlaceholderSwitcher : EditorWindow
             GUI.DrawTexture(rect, tex, ScaleMode.StretchToFill, false);
         }
 
-        // Orbit / Zoom controls
-        if (Event.current.type == EventType.MouseDrag && rect.Contains(Event.current.mousePosition))
+        // Orbit / Zoom / Pan
+        if (rect.Contains(Event.current.mousePosition))
         {
-            if (Event.current.button == 0)
+            if (Event.current.type == EventType.MouseDrag)
+            {
+                if (Event.current.button == 0) // orbit
+                {
+                    previewUserAdjusted = true;
+                    previewYaw += Event.current.delta.x * 0.5f;
+                    previewPitch = Mathf.Clamp(previewPitch - Event.current.delta.y * 0.5f, -80, 80);
+                    Repaint();
+                }
+                else if (Event.current.button == 2) // pan
+                {
+                    previewUserAdjusted = true;
+                    // Convert mouse delta to world-ish units relative to distance
+                    float panScale = previewDistance * 0.0025f;
+                    // Pan along camera right/up
+                    var right = Quaternion.Euler(0, previewYaw, 0) * Vector3.right;
+                    var up = Vector3.up;
+                    previewPivotOffset += (-right * Event.current.delta.x + up * Event.current.delta.y) * panScale;
+                    Repaint();
+                }
+            }
+            if (Event.current.type == EventType.ScrollWheel)
             {
                 previewUserAdjusted = true;
-                previewYaw += Event.current.delta.x * 0.5f;
-                previewPitch = Mathf.Clamp(previewPitch - Event.current.delta.y * 0.5f, -80, 80);
+                previewDistance = Mathf.Clamp(previewDistance * (1f + Event.current.delta.y * 0.04f), 0.3f, 2000f);
                 Repaint();
             }
         }
-        if (Event.current.type == EventType.ScrollWheel && rect.Contains(Event.current.mousePosition))
+    }
+
+    private Quaternion GetPreviewObjectRotation(Transform t)
+    {
+        switch (rotationMode)
         {
-            previewUserAdjusted = true;
-            previewDistance = Mathf.Clamp(previewDistance * (1f + Event.current.delta.y * 0.03f), 0.3f, 2000f);
-            Repaint();
+            case RotationMode.PlaceholderRotation:
+                return t.rotation * Quaternion.Euler(rotationEuler);
+            case RotationMode.NewRotation:
+                return Quaternion.Euler(rotationEuler);
+            case RotationMode.SeedValueOnY:
+                // Deterministic per object: seed + a stable hash of path/name
+                int hash = (t.GetInstanceID() ^ (t.name.GetHashCode() << 1));
+                var rng = new System.Random( (rotationSeed * 73856093) ^ hash );
+                float y = (float)(rng.NextDouble() * 360.0);
+                return Quaternion.Euler(0f, y, 0f);
+            default:
+                return t.rotation;
+        }
+    }
+
+    private Vector3 GetPreviewObjectScale(Transform t)
+    {
+        switch (scaleMode)
+        {
+            case ScaleMode.PlaceholderScale:
+                return Vector3.Scale(t.localScale, scaleXYZ);
+            case ScaleMode.NewScale:
+                return scaleXYZ;
+            case ScaleMode.SeedValue:
+                {
+                    int hash = (t.GetInstanceID() ^ (t.name.GetHashCode() << 1));
+                    var rng = new System.Random((scaleSeed * 19349663) ^ hash);
+                    float f = Mathf.Lerp(scaleRandomMin, scaleRandomMax, (float)rng.NextDouble());
+                    return Vector3.one * f;
+                }
+            default:
+                return t.localScale;
         }
     }
 
@@ -322,13 +477,7 @@ public class PlaceholderSwitcher : EditorWindow
             case PivotMode.Parent:
                 if (explicitParent) return explicitParent.position;
                 if (groupWithEmptyParent)
-                {
-                    // Approximate where the empty parent would be created
-                    return GetEmptyParentPositionForScene(
-                        candidates.Where(c => c && c.scene.IsValid()).ToList(),
-                        emptyParentLocation,
-                        manualEmptyParentPosition);
-                }
+                    return GetEmptyParentPositionForScene(candidates, emptyParentLocation, manualEmptyParentPosition);
                 goto case PivotMode.BoundsCenter;
 
             case PivotMode.FirstObject:
@@ -352,30 +501,13 @@ public class PlaceholderSwitcher : EditorWindow
             case PivotMode.SelectedObject:
                 if (Selection.activeTransform) return Selection.activeTransform.position;
                 return Vector3.zero;
-
-            default: return Vector3.zero;
         }
+        return Vector3.zero;
     }
 
-    private static Bounds TransformBounds(Bounds b, Vector3 pos, Quaternion rot, Vector3 scl)
-    {
-        // Transform AABB corners and re-encapsulate
-        var corners = new Vector3[8];
-        var ext = b.extents;
-        var c = b.center;
-        int i = 0;
-        for (int x = -1; x <= 1; x += 2)
-        for (int y = -1; y <= 1; y += 2)
-        for (int z = -1; z <= 1; z += 2)
-            corners[i++] = new Vector3(c.x + ext.x * x, c.y + ext.y * y, c.z + ext.z * z);
-
-        var bb = new Bounds(pos + rot * Vector3.Scale(corners[0], scl), Vector3.zero);
-        for (int k = 1; k < 8; k++)
-            bb.Encapsulate(pos + rot * Vector3.Scale(corners[k], scl));
-        return bb;
-    }
-
-    // ---------------- CORE LOGIC ----------------
+    // ------------------------------------------------------
+    // Core logic
+    // ------------------------------------------------------
     private static bool IsPrefabAsset(GameObject go)
     {
         var t = PrefabUtility.GetPrefabAssetType(go);
@@ -387,6 +519,7 @@ public class PlaceholderSwitcher : EditorWindow
         var candidates = Resources.FindObjectsOfTypeAll<Transform>()
             .Select(t => t ? t.gameObject : null)
             .Where(go => go != null && go.scene.IsValid() && go.name.StartsWith(prefix))
+            .OrderBy(go => go.name) // stable order for seeded ops
             .ToList();
 
         if (candidates.Count == 0)
@@ -395,7 +528,7 @@ public class PlaceholderSwitcher : EditorWindow
             return;
         }
 
-        // Map candidates per scene (for empty-parent placement)
+        // Per-scene grouping
         var candidatesByScene = new Dictionary<Scene, List<GameObject>>();
         foreach (var go in candidates)
         {
@@ -439,7 +572,10 @@ public class PlaceholderSwitcher : EditorWindow
                         groupingParent = gp;
                 }
 
-                var inst = ReplaceOne(src, targetPrefab, forcedName, useIncrementalNaming, rotationMode, rotationEuler, scaleFactor, groupingParent, _nameCounters);
+                var inst = ReplaceOne(src, targetPrefab, forcedName, useIncrementalNaming,
+                    rotationMode, rotationEuler, rotationSeed,
+                    scaleMode, scaleXYZ, scaleSeed, scaleRandomMin, scaleRandomMax,
+                    groupingParent, _nameCounters);
                 if (inst != null) spawned.Add(inst);
             }
         }
@@ -554,8 +690,11 @@ public class PlaceholderSwitcher : EditorWindow
         return init ? b.center : Vector3.zero;
     }
 
-    private static GameObject ReplaceOne(GameObject src, GameObject prefab, string forcedName, bool incremental,
-        RotationMode rotMode, Vector3 rotEuler, float scaleFactor, Transform groupingParent, Dictionary<string, int> counters)
+    private static GameObject ReplaceOne(
+        GameObject src, GameObject prefab, string forcedName, bool incremental,
+        RotationMode rotMode, Vector3 rotEuler, int rotSeed,
+        ScaleMode scMode, Vector3 scXYZ, int scSeed, float scMin, float scMax,
+        Transform groupingParent, Dictionary<string, int> counters)
     {
         if (src == null || prefab == null) return null;
 
@@ -569,30 +708,71 @@ public class PlaceholderSwitcher : EditorWindow
         var active = src.activeSelf;
         var staticFlags = GameObjectUtility.GetStaticEditorFlags(src);
 
-        var instanceObj = PrefabUtility.InstantiatePrefab(prefab, src.scene) as GameObject;
-        if (instanceObj == null) return null;
-        Undo.RegisterCreatedObjectUndo(instanceObj, "Create replacement");
+        var inst = PrefabUtility.InstantiatePrefab(prefab, src.scene) as GameObject;
+        if (inst == null) return null;
+        Undo.RegisterCreatedObjectUndo(inst, "Create replacement");
 
         var newParent = groupingParent != null ? groupingParent : parent;
-        instanceObj.transform.SetParent(newParent, false);
+        inst.transform.SetParent(newParent, false);
 
-        instanceObj.transform.localPosition = localPos;
-        instanceObj.transform.localRotation = (rotMode == RotationMode.Offset)
-            ? localRot * Quaternion.Euler(rotEuler)
-            : Quaternion.Euler(rotEuler);
-        instanceObj.transform.localScale = localScale * scaleFactor;
+        // Rotation
+        Quaternion finalRot;
+        switch (rotMode)
+        {
+            default:
+            case RotationMode.PlaceholderRotation:
+                finalRot = localRot * Quaternion.Euler(rotEuler);
+                break;
+            case RotationMode.NewRotation:
+                finalRot = Quaternion.Euler(rotEuler);
+                break;
+            case RotationMode.SeedValueOnY:
+                {
+                    int hash = (src.GetInstanceID() ^ (src.name.GetHashCode() << 1));
+                    var rng = new System.Random((rotSeed * 73856093) ^ hash);
+                    float y = (float)(rng.NextDouble() * 360.0);
+                    finalRot = Quaternion.Euler(0f, y, 0f);
+                }
+                break;
+        }
 
-        instanceObj.layer = layer;
-        try { instanceObj.tag = tag; } catch { }
-        GameObjectUtility.SetStaticEditorFlags(instanceObj, staticFlags);
-        instanceObj.SetActive(active);
+        // Scale
+        Vector3 finalScale;
+        switch (scMode)
+        {
+            default:
+            case ScaleMode.PlaceholderScale:
+                finalScale = Vector3.Scale(localScale, scXYZ);
+                break;
+            case ScaleMode.NewScale:
+                finalScale = scXYZ;
+                break;
+            case ScaleMode.SeedValue:
+                {
+                    int hash = (src.GetInstanceID() ^ (src.name.GetHashCode() << 1));
+                    var rng = new System.Random((scSeed * 19349663) ^ hash);
+                    float f = Mathf.Lerp(scMin, scMax, (float)rng.NextDouble());
+                    finalScale = Vector3.one * f; // uniform XYZ
+                }
+                break;
+        }
+
+        // Apply transform & metadata
+        inst.transform.localPosition = localPos;
+        inst.transform.localRotation = finalRot;
+        inst.transform.localScale = finalScale;
+
+        inst.layer = layer;
+        try { inst.tag = tag; } catch { }
+        GameObjectUtility.SetStaticEditorFlags(inst, staticFlags);
+        inst.SetActive(active);
 
         // Naming
-        if (!string.IsNullOrEmpty(forcedName)) instanceObj.name = ApplyIncremental(forcedName, incremental, counters);
-        else instanceObj.name = ApplyIncremental(instanceObj.name, incremental, counters);
+        if (!string.IsNullOrEmpty(forcedName)) inst.name = ApplyIncremental(forcedName, incremental, counters);
+        else inst.name = ApplyIncremental(inst.name, incremental, counters);
 
-        Undo.DestroyObjectImmediate(src); // Remove placeholder
-        return instanceObj;
+        Undo.DestroyObjectImmediate(src);
+        return inst;
     }
 
     private static string ApplyIncremental(string baseName, bool incremental, Dictionary<string, int> counters)
@@ -678,7 +858,6 @@ public class PlaceholderSwitcher : EditorWindow
         return root;
     }
 
-    // Rebuild custom instanced collider (best-effort) or use MeshCollider fallback
     private static void TryRebuildInstancedCollision(GameObject go)
     {
         if (!go) return;
@@ -723,6 +902,24 @@ public class PlaceholderSwitcher : EditorWindow
         }
         foreach (var n in names) { var t = Type.GetType(n); if (t != null) return t; }
         return null;
+    }
+
+    // Utility for transforming bounds
+    private static Bounds TransformBounds(Bounds b, Vector3 pos, Quaternion rot, Vector3 scl)
+    {
+        var corners = new Vector3[8];
+        var ext = b.extents;
+        var c = b.center;
+        int i = 0;
+        for (int x = -1; x <= 1; x += 2)
+        for (int y = -1; y <= 1; y += 2)
+        for (int z = -1; z <= 1; z += 2)
+            corners[i++] = new Vector3(c.x + ext.x * x, c.y + ext.y * y, c.z + ext.z * z);
+
+        var bb = new Bounds(pos + rot * Vector3.Scale(corners[0], scl), Vector3.zero);
+        for (int k = 1; k < 8; k++)
+            bb.Encapsulate(pos + rot * Vector3.Scale(corners[k], scl));
+        return bb;
     }
 }
 #endif
