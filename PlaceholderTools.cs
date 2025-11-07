@@ -15,8 +15,14 @@ public class PlaceholderSwitcher : EditorWindow
     // ---------- Inputs ----------
     [SerializeField] private string prefix = "SS_";
     [SerializeField] private GameObject targetPrefab = null;
-    [SerializeField] private string forcedName = "";
-    [SerializeField] private bool useIncrementalNaming = false; // _001, _002 per base name
+
+    // ---------- Naming ----------
+    private enum OriginalNameSource { Placeholder, Prefab }
+    [SerializeField] private bool keepOriginalNaming = true;                // When on, we keep names from source below
+    [SerializeField] private OriginalNameSource originalNameSource = OriginalNameSource.Prefab;
+    [SerializeField] private string forcedName = "";                        // If typed, disables the "keep original" controls
+    [SerializeField] private bool useIncrementalNaming = false;             // _001, _002 … (only when not keeping original naming)
+    private readonly Dictionary<string, int> _nameCounters = new Dictionary<string, int>();
 
     // ---------- Rotation ----------
     private enum RotationMode { PlaceholderRotation, NewRotation, SeedValueOnY }
@@ -70,7 +76,6 @@ public class PlaceholderSwitcher : EditorWindow
 
     // ---------- State ----------
     private readonly Dictionary<Scene, Transform> _groupParentByScene = new Dictionary<Scene, Transform>();
-    private readonly Dictionary<string, int> _nameCounters = new Dictionary<string, int>();
 
     [MenuItem("Tools/Placeholders/Placeholder Switcher")]
     public static void ShowWindow()
@@ -129,12 +134,46 @@ public class PlaceholderSwitcher : EditorWindow
         // Inputs
         prefix = EditorGUILayout.TextField(new GUIContent("Placeholder Prefix", "e.g. 'SS_'"), prefix);
         targetPrefab = (GameObject)EditorGUILayout.ObjectField(new GUIContent("Desired Asset (Prefab)"), targetPrefab, typeof(GameObject), false);
-        forcedName = EditorGUILayout.TextField(new GUIContent("Forced Name (optional)"), forcedName);
-        useIncrementalNaming = EditorGUILayout.Toggle(new GUIContent("Use incremental naming", "Names like Base_001, Base_002…"), useIncrementalNaming);
+
+        // ---------- Naming ----------
+        // If user typed any Forced Name, that takes priority and disables the "keep original" controls.
+        bool hasForced = !string.IsNullOrEmpty(forcedName);
+
+        using (new EditorGUI.DisabledScope(hasForced))
+        {
+            keepOriginalNaming = EditorGUILayout.Toggle(
+                new GUIContent("Keep original naming", "If ON, instances keep names from the source below."),
+                keepOriginalNaming);
+
+            using (new EditorGUI.DisabledScope(!keepOriginalNaming))
+            {
+                originalNameSource = (OriginalNameSource)EditorGUILayout.EnumPopup(
+                    new GUIContent("Original name source", "Placeholder = use placeholder's name; Prefab = use prefab's name"),
+                    originalNameSource);
+            }
+        }
+
+        using (new EditorGUI.DisabledScope(keepOriginalNaming))
+        {
+            forcedName = EditorGUILayout.TextField(new GUIContent("Forced Name"), forcedName);
+            useIncrementalNaming = EditorGUILayout.Toggle(new GUIContent("Use incremental naming (_001, _002, …)"), useIncrementalNaming);
+        }
+
+        if (keepOriginalNaming)
+        {
+            var tip = originalNameSource == OriginalNameSource.Placeholder
+                ? "Using each placeholder's name for the spawned instance."
+                : "Using the prefab's name for the spawned instance.";
+            EditorGUILayout.HelpBox(tip, MessageType.Info);
+        }
+        else if (hasForced)
+        {
+            EditorGUILayout.HelpBox("Forced name is active (original naming disabled).", MessageType.None);
+        }
 
         EditorGUILayout.Space(6);
 
-        // Rotation
+        // ---------- Rotation ----------
         GUILayout.Label("Rotation", EditorStyles.boldLabel);
         rotationMode = (RotationMode)EditorGUILayout.EnumPopup(new GUIContent("Rotation Mode"), rotationMode);
         if (rotationMode == RotationMode.PlaceholderRotation || rotationMode == RotationMode.NewRotation)
@@ -160,7 +199,7 @@ public class PlaceholderSwitcher : EditorWindow
 
         EditorGUILayout.Space(6);
 
-        // Scale
+        // ---------- Scale ----------
         GUILayout.Label("Scale", EditorStyles.boldLabel);
         scaleMode = (ScaleMode)EditorGUILayout.EnumPopup(new GUIContent("Scaling Mode"), scaleMode);
 
@@ -191,7 +230,7 @@ public class PlaceholderSwitcher : EditorWindow
 
         EditorGUILayout.Space(6);
 
-        // Parenting
+        // ---------- Parenting ----------
         GUILayout.Label("Parenting", EditorStyles.boldLabel);
         using (new EditorGUI.DisabledScope(groupWithEmptyParent))
         {
@@ -217,7 +256,7 @@ public class PlaceholderSwitcher : EditorWindow
 
         EditorGUILayout.Space(6);
 
-        // Combine + Save
+        // ---------- Combine + Save ----------
         GUILayout.Label("Combine / Save", EditorStyles.boldLabel);
         combineIntoOne = EditorGUILayout.Toggle(new GUIContent("Combine objects into one", "Static content only"), combineIntoOne);
         using (new EditorGUI.DisabledScope(!combineIntoOne))
@@ -236,7 +275,7 @@ public class PlaceholderSwitcher : EditorWindow
             EditorGUI.indentLevel--;
         }
 
-        // Move
+        // ---------- Move ----------
         moveToWorldCoordinates = EditorGUILayout.Toggle(new GUIContent("Move to world coordinates"), moveToWorldCoordinates);
         using (new EditorGUI.DisabledScope(!moveToWorldCoordinates))
         {
@@ -245,10 +284,10 @@ public class PlaceholderSwitcher : EditorWindow
             EditorGUI.indentLevel--;
         }
 
-        // Collision
+        // ---------- Collision ----------
         rebuildInstancedCollision = EditorGUILayout.Toggle(new GUIContent("Rebuild instanced collision"), rebuildInstancedCollision);
 
-        // Save
+        // ---------- Save ----------
         saveAsNewPrefab = EditorGUILayout.Toggle(new GUIContent("Save as new prefab"), saveAsNewPrefab);
         using (new EditorGUI.DisabledScope(!saveAsNewPrefab))
         {
@@ -335,6 +374,7 @@ public class PlaceholderSwitcher : EditorWindow
         previewMesh = null; previewMats = null;
         if (targetPrefab == null) return;
         var mf = targetPrefab.GetComponentInChildren<MeshFilter>();
+        the:
         var mr = targetPrefab.GetComponentInChildren<MeshRenderer>();
         if (mf != null && mf.sharedMesh != null) previewMesh = mf.sharedMesh;
         if (mr != null && mr.sharedMaterials != null && mr.sharedMaterials.Length > 0) previewMats = mr.sharedMaterials;
@@ -410,7 +450,7 @@ public class PlaceholderSwitcher : EditorWindow
 
             cam.Render();
             var tex = previewUtil.EndPreview();
-            GUI.DrawTexture(rect, tex, ScaleMode.StretchToFill, false);
+            GUI.DrawTexture(rect, tex, UnityEngine.ScaleMode.StretchToFill, false);
         }
 
         // Orbit / Zoom / Pan
@@ -453,9 +493,8 @@ public class PlaceholderSwitcher : EditorWindow
             case RotationMode.NewRotation:
                 return Quaternion.Euler(rotationEuler);
             case RotationMode.SeedValueOnY:
-                // Deterministic per object: seed + stable hash => per-object variation
                 int hash = (t.GetInstanceID() ^ (t.name.GetHashCode() << 1));
-                var rng = new System.Random( unchecked((rotationSeed * 73856093) ^ hash) );
+                var rng = new System.Random(unchecked((rotationSeed * 73856093) ^ hash));
                 float y = (float)(rng.NextDouble() * 360.0);
                 return Quaternion.Euler(0f, y, 0f);
             default:
@@ -474,7 +513,7 @@ public class PlaceholderSwitcher : EditorWindow
             case ScaleMode.SeedValue:
             {
                 int hash = (t.GetInstanceID() ^ (t.name.GetHashCode() << 1));
-                var rng = new System.Random( unchecked((scaleSeed * 19349663) ^ hash) );
+                var rng = new System.Random(unchecked((scaleSeed * 19349663) ^ hash));
                 float minv = SafePositive(scaleRandomMin, 0.0001f);
                 float maxv = SafePositive(scaleRandomMax, 0.0001f);
                 if (maxv < minv) { var tmp = minv; minv = maxv; maxv = tmp; }
@@ -588,10 +627,14 @@ public class PlaceholderSwitcher : EditorWindow
                         groupingParent = gp;
                 }
 
-                var inst = ReplaceOne(src, targetPrefab, forcedName, useIncrementalNaming,
+                var inst = ReplaceOne(
+                    src, targetPrefab,
+                    keepOriginalNaming, originalNameSource,
+                    forcedName, useIncrementalNaming,
                     rotationMode, rotationEuler, rotationSeed,
                     scaleMode, scaleXYZ, scaleSeed, scaleRandomMin, scaleRandomMax,
                     groupingParent, _nameCounters);
+
                 if (inst != null) spawned.Add(inst);
             }
         }
@@ -707,7 +750,9 @@ public class PlaceholderSwitcher : EditorWindow
     }
 
     private static GameObject ReplaceOne(
-        GameObject src, GameObject prefab, string forcedName, bool incremental,
+        GameObject src, GameObject prefab,
+        bool keepOriginal, OriginalNameSource nameSource,
+        string forced, bool incremental,
         RotationMode rotMode, Vector3 rotEuler, int rotSeed,
         ScaleMode scMode, Vector3 scXYZ, int scSeed, float scMin, float scMax,
         Transform groupingParent, Dictionary<string, int> counters)
@@ -743,13 +788,13 @@ public class PlaceholderSwitcher : EditorWindow
                 finalRot = Quaternion.Euler(rotEuler);
                 break;
             case RotationMode.SeedValueOnY:
-                {
-                    int hash = (src.GetInstanceID() ^ (src.name.GetHashCode() << 1));
-                    var rng = new System.Random(unchecked((rotSeed * 73856093) ^ hash));
-                    float y = (float)(rng.NextDouble() * 360.0);
-                    finalRot = Quaternion.Euler(0f, y, 0f);
-                }
+            {
+                int hash = (src.GetInstanceID() ^ (src.name.GetHashCode() << 1));
+                var rng = new System.Random(unchecked((rotSeed * 73856093) ^ hash));
+                float y = (float)(rng.NextDouble() * 360.0);
+                finalRot = Quaternion.Euler(0f, y, 0f);
                 break;
+            }
         }
 
         // Scale
@@ -764,16 +809,16 @@ public class PlaceholderSwitcher : EditorWindow
                 finalScale = SafeVector3(scXYZ, 0.0001f);
                 break;
             case ScaleMode.SeedValue:
-                {
-                    int hash = (src.GetInstanceID() ^ (src.name.GetHashCode() << 1));
-                    var rng = new System.Random(unchecked((scSeed * 19349663) ^ hash));
-                    float minv = SafePositive(scMin, 0.0001f);
-                    float maxv = SafePositive(scMax, 0.0001f);
-                    if (maxv < minv) { var tmp = minv; minv = maxv; maxv = tmp; }
-                    float f = Mathf.Lerp(minv, maxv, (float)rng.NextDouble());
-                    finalScale = new Vector3(f, f, f);
-                }
+            {
+                int hash = (src.GetInstanceID() ^ (src.name.GetHashCode() << 1));
+                var rng = new System.Random(unchecked((scSeed * 19349663) ^ hash));
+                float minv = SafePositive(scMin, 0.0001f);
+                float maxv = SafePositive(scMax, 0.0001f);
+                if (maxv < minv) { var tmp = minv; minv = maxv; maxv = tmp; }
+                float f = Mathf.Lerp(minv, maxv, (float)rng.NextDouble());
+                finalScale = new Vector3(f, f, f);
                 break;
+            }
         }
 
         // Apply transform & metadata
@@ -787,8 +832,19 @@ public class PlaceholderSwitcher : EditorWindow
         inst.SetActive(active);
 
         // Naming
-        if (!string.IsNullOrEmpty(forcedName)) inst.name = ApplyIncremental(forcedName, incremental, counters);
-        else inst.name = ApplyIncremental(inst.name, incremental, counters);
+        if (keepOriginal)
+        {
+            inst.name = (nameSource == OriginalNameSource.Placeholder) ? src.name : prefab.name;
+        }
+        else if (!string.IsNullOrEmpty(forced))
+        {
+            inst.name = ApplyIncremental(forced, incremental, counters);
+        }
+        else
+        {
+            // Use prefab instance name (Unity sets it to prefab name) with optional increment
+            inst.name = ApplyIncremental(inst.name, incremental, counters);
+        }
 
         Undo.DestroyObjectImmediate(src);
         return inst;
