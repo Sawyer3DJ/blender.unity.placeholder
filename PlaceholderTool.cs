@@ -69,7 +69,7 @@ public class PlaceholderSwitcher : EditorWindow
 
     // ---------- State ----------
     private readonly Dictionary<Scene, Transform> _groupParentByScene = new Dictionary<Scene, Transform>();
-    private readonly Dictionary<string, int> _nameCounters = new Dictionary<string, int>(); // <- fixed CS1525 typo here
+    private readonly Dictionary<string, int> _nameCounters = new Dictionary<string, int>();
 
     // ---------- Local "parameter undo" stack ----------
     private struct ParamSnapshot
@@ -145,7 +145,7 @@ public class PlaceholderSwitcher : EditorWindow
     // ------------------------------------------------------
     private void OnGUI()
     {
-        // Top toolbar (right aligned)
+        // Top toolbar
         GUILayout.Space(4);
         EditorGUILayout.BeginHorizontal();
         GUILayout.FlexibleSpace();
@@ -181,7 +181,7 @@ public class PlaceholderSwitcher : EditorWindow
 
         // -------- Left: Preview column --------
         EditorGUILayout.BeginVertical(GUILayout.Width(Mathf.Max(position.width * 0.5f, 520f)));
-        DrawPreviewArea(); // includes background select + controls + file ops
+        DrawPreviewArea();
         EditorGUILayout.EndVertical();
 
         // -------- Right: Controls column --------
@@ -194,7 +194,6 @@ public class PlaceholderSwitcher : EditorWindow
 
     private void DrawControls()
     {
-        // Section title
         var sec = new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 };
         GUILayout.Label("Replace Object Placeholders", sec);
 
@@ -257,7 +256,6 @@ public class PlaceholderSwitcher : EditorWindow
         {
             using (new EditorGUI.IndentLevelScope())
             {
-                // base offset (adds to seeded uniform)
                 scaleXYZ = SafeVector3(EditorGUILayout.Vector3Field(new GUIContent("Scale (adds to seeded uniform)"), scaleXYZ), 0.0001f);
 
                 EditorGUILayout.BeginHorizontal();
@@ -339,7 +337,6 @@ public class PlaceholderSwitcher : EditorWindow
 
         EditorGUILayout.Space(12);
 
-        // Main action (make big)
         using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(prefix) || targetPrefab == null || !IsPrefabAsset(targetPrefab)))
         {
             var big = new GUIStyle(GUI.skin.button) { fontSize = 14, fixedHeight = 40 };
@@ -358,34 +355,27 @@ public class PlaceholderSwitcher : EditorWindow
     // ------------------------------------------------------
     private void DrawPreviewArea()
     {
-        // Title (left column)
         var title = new GUIStyle(EditorStyles.boldLabel) { fontSize = 16, alignment = TextAnchor.UpperLeft };
         GUILayout.Label("Placeholder Switcher", title);
         GUILayout.Space(2);
 
-        // Viewport
         var rect = GUILayoutUtility.GetRect(10, 10, 480, 480);
         DrawPreview(rect);
 
-        // Background selector + controls + file ops
         EditorGUILayout.Space(4);
-
         EditorGUILayout.BeginHorizontal();
         GUILayout.Label("Viewer Background", GUILayout.Width(120));
         if (GUILayout.Toggle(previewBackground == PreviewBg.CurrentSkybox, "Current Skybox", EditorStyles.miniButtonLeft))
         {
-            previewBackground = PreviewBg.CurrentSkybox;
-            ApplyPreviewBackground();
+            previewBackground = PreviewBg.CurrentSkybox; ApplyPreviewBackground();
         }
         if (GUILayout.Toggle(previewBackground == PreviewBg.BasicScene, "Basic Scene", EditorStyles.miniButtonMid))
         {
-            previewBackground = PreviewBg.BasicScene;
-            ApplyPreviewBackground();
+            previewBackground = PreviewBg.BasicScene; ApplyPreviewBackground();
         }
         if (GUILayout.Toggle(previewBackground == PreviewBg.Viewport, "Viewport", EditorStyles.miniButtonRight))
         {
-            previewBackground = PreviewBg.Viewport;
-            ApplyPreviewBackground();
+            previewBackground = PreviewBg.Viewport; ApplyPreviewBackground();
         }
         EditorGUILayout.EndHorizontal();
 
@@ -401,7 +391,6 @@ public class PlaceholderSwitcher : EditorWindow
 
         EditorGUILayout.Space(6);
 
-        // Save path & preview actions
         EditorGUILayout.BeginHorizontal();
         savePath = EditorGUILayout.TextField("Save Path", savePath);
         if (GUILayout.Button("Select…", GUILayout.Width(80)))
@@ -439,7 +428,6 @@ public class PlaceholderSwitcher : EditorWindow
         }
         EditorGUILayout.EndHorizontal();
 
-        // Status
         int c = CountPlaceholders(prefix);
         if (c == 0)
             EditorGUILayout.HelpBox("Nothing to save: enter a prefix and pick a Desired Asset to enable preview.", MessageType.Info);
@@ -555,7 +543,7 @@ public class PlaceholderSwitcher : EditorWindow
 
             cam.Render();
             var tex = previewUtil.EndPreview();
-            GUI.DrawTexture(rect, tex, ScaleMode.StretchToFill, false);
+            GUI.DrawTexture(rect, tex, UnityEngine.ScaleMode.StretchToFill, false); // fully qualify to avoid enum clash
         }
 
         if (rect.Contains(Event.current.mousePosition))
@@ -588,7 +576,6 @@ public class PlaceholderSwitcher : EditorWindow
         }
     }
 
-    // ---------- Preview helpers ----------
     private Vector3 GetPreviewPivot(List<GameObject> candidates)
     {
         switch (pivotMode)
@@ -1066,7 +1053,6 @@ public class PlaceholderSwitcher : EditorWindow
         return v;
     }
 
-    // Utility for transforming bounds
     private static Bounds TransformBounds(Bounds b, Vector3 pos, Quaternion rot, Vector3 scl)
     {
         var corners = new Vector3[8];
@@ -1104,9 +1090,9 @@ public class PlaceholderSwitcher : EditorWindow
     {
         unchecked
         {
-            long z = seed + 0x9E3779B97F4A7C15L;
-            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9L;
-            z = (z ^ (z >> 27)) * 0x94D049BB133111EBL;
+            long z = seed + unchecked((long)0x9E3779B97F4A7C15UL);
+            z = (z ^ (z >> 30)) * unchecked((long)0xBF58476D1CE4E5B9UL);
+            z = (z ^ (z >> 27)) * unchecked((long)0x94D049BB133111EBUL);
             z = z ^ (z >> 31);
             return (int)z;
         }
@@ -1125,7 +1111,6 @@ public class PlaceholderSwitcher : EditorWindow
     {
         if (_undo.Count >= UndoCap)
         {
-            // Simple cap: discard oldest by rebuilding smaller stack
             var tmp = new Stack<ParamSnapshot>(UndoCap);
             var arr = _undo.ToArray();
             for (int i = arr.Length - 2; i >= 0; --i) tmp.Push(arr[i]);
@@ -1281,7 +1266,6 @@ public class GameObjectLibraryWindow : EditorWindow
 
         EditorGUILayout.EndScrollView();
 
-        // Force repaints while previews stream in
         if (EditorApplication.timeSinceStartup > _nextRepaint)
         {
             Repaint();
