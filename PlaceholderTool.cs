@@ -9,38 +9,35 @@ using UnityEngine.SceneManagement;
 public class PlaceholderSwitcher : EditorWindow
 {
     // -----------------------------
-    // Header / layout constants
+    // Layout / constants
     // -----------------------------
-    private const float TitleBarHeight = 30f;
+    private const float TitleBarHeight = 40f;
     private const float SectionHeaderHeight = 22f;
-    private const float RightColMinWidth = 420f;
-    private const float LeftColMinWidth  = 520f;
+    private const float LeftColMinWidth  = 560f;   // preview + inputs
+    private const float RightColMinWidth = 460f;   // transform tools (scrollable)
     private const int   MaxLocalUndoSnapshots = 64;
     private const string VersionLabel = "v.1.0.0";
 
     // -----------------------------
-    // Inputs (left column, above viewer)
+    // Replace inputs (left, above viewer)
     // -----------------------------
-    [SerializeField] private string prefix = "SS_";
+    [SerializeField] private string     prefix = "SS_";
     [SerializeField] private GameObject targetPrefab = null;
-    [SerializeField] private string forcedName = "";
-    [SerializeField] private bool useIncrementalNaming = false;
-    [SerializeField] private bool autoSwitch = false;
+    [SerializeField] private string     forcedName = "";
+    [SerializeField] private bool       useIncrementalNaming = false;
+    [SerializeField] private bool       autoSwitchToScene = false;   // single, canonical auto-switch toggle
 
     // -----------------------------
     // Viewer & background
     // -----------------------------
-    private enum ViewerBg { CurrentSkybox, UnitySkybox, ManualSkybox }
+    private enum ViewerBg { CurrentSkybox, UnitySkybox }
     [SerializeField] private ViewerBg viewerBg = ViewerBg.CurrentSkybox;
 
     private PreviewRenderUtility preview;
-    private float pvYaw = -30f, pvPitch = 15f, pvDist = 6f;
+    private float   pvYaw = -30f, pvPitch = 15f, pvDist = 6f;
     private Vector3 pvPan = Vector3.zero;
-    private bool pvUserAdjusted = false;
+    private bool    pvUserAdjusted = false;
     private Material fallbackMat;
-
-    // Manual skybox material (preview-only)
-    [SerializeField] private Material manualSkyboxMat = null;
 
     // Orbit controls
     private bool orbitInvertY = true;   // default ON
@@ -50,23 +47,20 @@ public class PlaceholderSwitcher : EditorWindow
     private SceneView externalViewport;
     [SerializeField] private bool autoSyncViewport = true;
 
-    // Library windows
-    private LibraryWindow libraryWindow;
-    private SkyboxLibraryWindow skyboxLibraryWindow;
-
     // -----------------------------
-    // Transform Tools (right column)
+    // Transform Tools (right)
     // -----------------------------
     private enum RotationMode { PlaceholderRotation, NewRotation, SeedValueOnY }
     [SerializeField] private RotationMode rotationMode = RotationMode.PlaceholderRotation;
     [SerializeField] private Vector3 rotationEuler = Vector3.zero;
-    [SerializeField] private long rotationSeed = 1234;
+    [SerializeField] private long   rotationSeed = 1234; // up to 10 digits
 
     private enum ScaleMode { PlaceholderScale, NewScale, SeedValue }
     [SerializeField] private ScaleMode scaleMode = ScaleMode.PlaceholderScale;
-    [SerializeField] private float scaleUnified = 1f;
-    [SerializeField] private long scaleSeed = 321;
-    [SerializeField] private bool scaleAffectX = true, scaleAffectY = true, scaleAffectZ = true;
+    [SerializeField] private float scaleUnified = 1f; // single value for XYZ (locked)
+    [SerializeField] private long  scaleSeed = 321;
+    // influence per-axis + clamping for seeded scale
+    [SerializeField] private bool  scaleAffectX = true, scaleAffectY = true, scaleAffectZ = true;
     [SerializeField] private float scaleClampMinX = 0.8f, scaleClampMaxX = 1.2f;
     [SerializeField] private float scaleClampMinY = 0.8f, scaleClampMaxY = 1.2f;
     [SerializeField] private float scaleClampMinZ = 0.8f, scaleClampMaxZ = 1.2f;
@@ -74,12 +68,13 @@ public class PlaceholderSwitcher : EditorWindow
     private enum OffsetSpace { Local, World }
     [SerializeField] private OffsetSpace locationSpace = OffsetSpace.Local;
     [SerializeField] private Vector3 locationOffset = Vector3.zero;
-    [SerializeField] private long locationSeed = 4567;
-    [SerializeField] private bool locAffectX = true, locAffectY = true, locAffectZ = true;
-    [SerializeField] private float locClampMinX = -1f, locClampMaxX = 1f;
-    [SerializeField] private float locClampMinY = -1f, locClampMaxY = 1f;
-    [SerializeField] private float locClampMinZ = -1f, locClampMaxZ = 1f;
+    [SerializeField] private long   locationSeed = 4567;
+    [SerializeField] private bool   locAffectX = true, locAffectY = true, locAffectZ = true;
+    [SerializeField] private float  locClampMinX = -1f, locClampMaxX = 1f;
+    [SerializeField] private float  locClampMinY = -1f, locClampMaxY = 1f;
+    [SerializeField] private float  locClampMinZ = -1f, locClampMaxZ = 1f;
 
+    // Parenting / combining / move
     [SerializeField] private Transform explicitParent = null;
     [SerializeField] private bool groupWithEmptyParent = false;
     [SerializeField] private string groupParentName = "Imported Placeholders";
@@ -93,26 +88,33 @@ public class PlaceholderSwitcher : EditorWindow
 
     private enum MoveTarget { None, FirstObject, BoundsCenter, WorldOrigin, WorldCoordinates, SelectedObject, Parent }
     [SerializeField] private MoveTarget moveAllTo = MoveTarget.None;
-    [SerializeField] private Vector3 moveWorldCoordinate = Vector3.zero;
+    [SerializeField] private Vector3   moveWorldCoordinate = Vector3.zero;
 
+    // Convert to Shrub + collision
     [SerializeField] private bool convertToShrub = false;
     [SerializeField] private int  shrubRenderDistance = 1000;
     [SerializeField] private bool rebuildInstancedCollision = false;
 
+    // Save
     [SerializeField] private string savePath = "Assets/CombinedPlaceholder.prefab";
 
+    // State helpers
     private readonly Dictionary<Scene, Transform> groupParentCache = new Dictionary<Scene, Transform>();
     private readonly List<ParamSnapshot> undoStack = new List<ParamSnapshot>();
     private int undoIndex = -1;
+    private bool autoSwitchWarningShown = false;
+    private Vector2 rightScroll;
 
+    // =================== Menu ===================
     [MenuItem("Tools/Placeholder Tools/Placeholder Switcher")]
     public static void ShowWindow()
     {
         var w = GetWindow<PlaceholderSwitcher>(true, "Placeholder Switcher");
-        w.minSize = new Vector2(1140, 720);
+        w.minSize = new Vector2(1180, 760);
         w.Show();
     }
 
+    // =================== Lifecycle ===================
     private void OnEnable()
     {
         EnsurePreview();
@@ -126,8 +128,6 @@ public class PlaceholderSwitcher : EditorWindow
         if (fallbackMat != null) DestroyImmediate(fallbackMat);
         fallbackMat = null;
 
-        if (libraryWindow != null) { libraryWindow.Close(); libraryWindow = null; }
-        if (skyboxLibraryWindow != null) { skyboxLibraryWindow.Close(); skyboxLibraryWindow = null; }
         if (externalViewport != null) { externalViewport.Close(); externalViewport = null; }
     }
 
@@ -141,60 +141,19 @@ public class PlaceholderSwitcher : EditorWindow
         ApplyViewerBackground();
     }
 
+    // =================== GUI ===================
     private void OnGUI()
     {
         EnsurePreview();
-        DrawTitleRow();
 
-        EditorGUILayout.BeginHorizontal();
-
-        EditorGUILayout.BeginVertical(GUILayout.MinWidth(LeftColMinWidth));
-        DrawReplaceSectionLeft();
-        DrawViewer();
-        EditorGUILayout.EndVertical();
-
-        EditorGUILayout.BeginVertical(GUILayout.MinWidth(RightColMinWidth));
-        DrawRightColumnHeader("Transform Tools");
-        DrawRotationOffset();
-        DrawScaleOffset();
-        DrawLocationOffset();
-        DrawParenting();
-        DrawCombineAndMove();
-        DrawConvertAndCollision();
-        EditorGUILayout.EndVertical();
-
-        EditorGUILayout.EndHorizontal();
-
-        GUILayout.FlexibleSpace();
-        EditorGUILayout.BeginHorizontal();
-        GUILayout.Label(VersionLabel, EditorStyles.miniLabel, GUILayout.Width(80));
-        GUILayout.FlexibleSpace();
-        EditorGUILayout.EndHorizontal();
-
-        if (autoSyncViewport) UpdateExternalViewport();
-        if (autoSwitch && CanSwitchNow())
+        // Title row
+        using (new DarkHeader(TitleBarHeight))
         {
-            if (!autoSwitchWarningShown)
-            {
-                autoSwitchWarningShown = true;
-                EditorUtility.DisplayDialog(
-                    "Auto Switch Enabled",
-                    "Warning: While Auto Switch is ON, whichever model you preview will automatically replace the current game objects matched by the prefix.\nYou have 64 undos. Use them wisely!",
-                    "OK");
-            }
-            RunSwitch(replaceMode: targetPrefab != null);
-        }
-    }
+            var big = new GUIStyle(EditorStyles.boldLabel) { fontSize = 18, alignment = TextAnchor.MiddleCenter };
+            GUILayout.Label("Placeholder Switcher", big, GUILayout.Height(TitleBarHeight));
 
-    private void DrawTitleRow()
-    {
-        using (new DarkHeaderScope(TitleBarHeight))
-        {
             GUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
-            GUILayout.Label("Placeholder Switcher", EditorStyles.boldLabel, GUILayout.Height(TitleBarHeight));
-            GUILayout.FlexibleSpace();
-
             if (GUILayout.Button("Open GameObject Library", GUILayout.Height(22), GUILayout.Width(200)))
                 OpenLibrary();
             if (GUILayout.Button("Randomize All Parameters", GUILayout.Height(22), GUILayout.Width(200)))
@@ -207,17 +166,138 @@ public class PlaceholderSwitcher : EditorWindow
                 UndoLocal(); Repaint();
             }
             GUI.enabled = true;
-
             GUILayout.EndHorizontal();
+        }
+
+        EditorGUILayout.BeginHorizontal();
+
+        // -------- LEFT COLUMN --------
+        EditorGUILayout.BeginVertical(GUILayout.MinWidth(LeftColMinWidth));
+
+        DrawReplaceSectionLeft();
+
+        // Viewer
+        var rect = GUILayoutUtility.GetRect(10, 10, Mathf.Max(position.width * 0.45f, 420f), 420f);
+        DrawPreview(rect);
+
+        // Viewer background controls UNDER the viewer
+        using (new DarkHeader(SectionHeaderHeight))
+        {
+            var hdr = new GUIStyle(EditorStyles.boldLabel) { fontSize = 12 };
+            GUILayout.Label("Viewer Background", hdr, GUILayout.Height(SectionHeaderHeight));
+        }
+        EditorGUILayout.BeginHorizontal();
+        if (GUILayout.Toggle(viewerBg == ViewerBg.CurrentSkybox, "Current Skybox", "Button", GUILayout.Width(140)))
+        {
+            if (viewerBg != ViewerBg.CurrentSkybox) { viewerBg = ViewerBg.CurrentSkybox; ApplyViewerBackground(); }
+        }
+        if (GUILayout.Toggle(viewerBg == ViewerBg.UnitySkybox, "Unity Skybox", "Button", GUILayout.Width(140)))
+        {
+            if (viewerBg != ViewerBg.UnitySkybox) { viewerBg = ViewerBg.UnitySkybox; ApplyViewerBackground(); }
+        }
+        GUILayout.FlexibleSpace();
+        autoSyncViewport = GUILayout.Toggle(autoSyncViewport, "Auto-Sync Model View to Viewport", GUILayout.Width(240));
+        if (GUILayout.Button("Open Viewport", GUILayout.Width(110))) OpenViewport();
+        if (GUILayout.Button("Close Viewport", GUILayout.Width(110))) CloseViewport();
+        EditorGUILayout.EndHorizontal();
+
+        // Load / Save subheading (dark row)
+        using (new DarkHeader(SectionHeaderHeight))
+        {
+            var hdr = new GUIStyle(EditorStyles.boldLabel) { fontSize = 12 };
+            GUILayout.Label("Load / Save", hdr, GUILayout.Height(SectionHeaderHeight));
+        }
+
+        // Path line
+        EditorGUILayout.BeginHorizontal();
+        savePath = EditorGUILayout.TextField(new GUIContent("Save Path"), savePath);
+        if (GUILayout.Button("Select…", GUILayout.Width(80)))
+        {
+            var suggested = System.IO.Path.GetFileName(savePath);
+            var path = EditorUtility.SaveFilePanelInProject("Save Prefab As",
+                string.IsNullOrEmpty(suggested) ? "CombinedPlaceholder" : suggested,
+                "prefab", "Choose save path");
+            if (!string.IsNullOrEmpty(path)) savePath = path;
+        }
+        EditorGUILayout.EndHorizontal();
+
+        // Save / Load buttons
+        EditorGUILayout.BeginHorizontal();
+        bool exactlyOne = CountPlaceholders(prefix) == 1;
+        GUI.enabled = exactlyOne;
+        if (GUILayout.Button("Save From Preview As…", GUILayout.Height(28)))
+            SaveFromPreviewSingle();
+        GUI.enabled = true;
+
+        if (GUILayout.Button("Load Asset From File", GUILayout.Height(28), GUILayout.Width(180)))
+        {
+            EditorUtility.DisplayDialog("Import Info",
+                "To load external models (.fbx/.obj/.gltf), import them into the Project first. Then assign them as the Desired Asset (Prefab) or pick via the GameObject Library.",
+                "OK");
+        }
+        EditorGUILayout.EndHorizontal();
+
+        // Save message
+        int count = CountPlaceholders(prefix);
+        if (count == 0)
+            EditorGUILayout.HelpBox("Nothing to save — enter a prefix (≥3 chars) to find objects.", MessageType.Info);
+        else if (count > 1 && !combineIntoOne)
+            EditorGUILayout.HelpBox("Multiple placeholders detected. Combine all objects first to enable single-object Save From Preview.", MessageType.Warning);
+
+        // Main action row
+        EditorGUILayout.Space(6);
+        GUI.enabled = CanSwitchNow();
+        if (GUILayout.Button("Switch Placeholders", GUILayout.Height(40))) RunSwitch(replaceMode: targetPrefab != null);
+        GUI.enabled = true;
+
+        // Version
+        GUILayout.FlexibleSpace();
+        GUILayout.Label(VersionLabel, EditorStyles.miniLabel, GUILayout.Width(80));
+
+        EditorGUILayout.EndVertical();
+
+        // -------- RIGHT COLUMN (scrollable) --------
+        EditorGUILayout.BeginVertical(GUILayout.MinWidth(RightColMinWidth));
+        rightScroll = EditorGUILayout.BeginScrollView(rightScroll);
+
+        DrawRightColumnHeader("Transform Tools");
+        DrawRotationOffset();
+        DrawScaleOffset();
+        DrawLocationOffset();
+        DrawParenting();
+        DrawCombineAndMove();
+        DrawConvertAndCollision();
+
+        EditorGUILayout.EndScrollView();
+        EditorGUILayout.EndVertical();
+
+        EditorGUILayout.EndHorizontal();
+
+        // External viewport follow
+        if (autoSyncViewport) UpdateExternalViewport();
+
+        // Auto-switch live
+        if (autoSwitchToScene && CanSwitchNow())
+        {
+            if (!autoSwitchWarningShown)
+            {
+                autoSwitchWarningShown = true;
+                EditorUtility.DisplayDialog(
+                    "Auto Switch Enabled",
+                    "The placeholders will be switched with the selected object(s) in real time.\nYou only have 64 undos — use them wisely!",
+                    "OK");
+            }
+            RunSwitch(replaceMode: targetPrefab != null);
         }
     }
 
-    // ---------------- LEFT: Replace section ----------------
+    // ---------- Replace (left) ----------
     private void DrawReplaceSectionLeft()
     {
-        using (new DarkHeaderScope(SectionHeaderHeight))
+        using (new DarkHeader(SectionHeaderHeight))
         {
-            GUILayout.Label("Replace Object Placeholders", EditorStyles.boldLabel, GUILayout.Height(SectionHeaderHeight));
+            var hdr = new GUIStyle(EditorStyles.boldLabel) { fontSize = 12 };
+            GUILayout.Label("Replace Object Placeholders", hdr, GUILayout.Height(SectionHeaderHeight));
         }
 
         // Prefix + live status
@@ -231,13 +311,27 @@ public class PlaceholderSwitcher : EditorWindow
         GUILayout.Label(status, EditorStyles.miniLabel, GUILayout.Width(150));
         EditorGUILayout.EndHorizontal();
 
+        // Desired prefab
         var obj = (GameObject)EditorGUILayout.ObjectField(new GUIContent("Desired Asset (Prefab)"), targetPrefab, typeof(GameObject), false);
         if (obj != targetPrefab) { targetPrefab = obj; pvUserAdjusted = false; }
 
         forcedName = EditorGUILayout.TextField(new GUIContent("Forced Name (optional)"), forcedName);
         useIncrementalNaming = EditorGUILayout.Toggle(new GUIContent("Use incremental naming"), useIncrementalNaming);
 
-        autoSwitch = EditorGUILayout.Toggle(new GUIContent("Auto Switch Placeholders"), autoSwitch);
+        // Single auto-switch toggle here (with warning when first enabled)
+        bool newAuto = EditorGUILayout.Toggle(new GUIContent("Automatically switch placeholders to scene"), autoSwitchToScene);
+        if (newAuto != autoSwitchToScene)
+        {
+            autoSwitchToScene = newAuto;
+            if (autoSwitchToScene && !autoSwitchWarningShown)
+            {
+                autoSwitchWarningShown = true;
+                EditorUtility.DisplayDialog(
+                    "Auto Switch Enabled",
+                    "The placeholders will be switched with the selected object(s) in real time.\nYou only have 64 undos — use them wisely!",
+                    "OK");
+            }
+        }
     }
 
     private int CountPlaceholders(string pfx)
@@ -253,106 +347,7 @@ public class PlaceholderSwitcher : EditorWindow
         return CountPlaceholders(prefix) > 0;
     }
 
-    // ---------------- LEFT: Viewer ----------------
-    private void DrawViewer()
-    {
-        EditorGUILayout.Space(6);
-        using (new DarkHeaderScope(SectionHeaderHeight))
-        {
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Viewer Background", EditorStyles.boldLabel, GUILayout.Height(SectionHeaderHeight));
-            GUILayout.FlexibleSpace();
-
-            if (GUILayout.Toggle(viewerBg == ViewerBg.CurrentSkybox, "Current Skybox", "Button", GUILayout.Width(120)))
-            {
-                if (viewerBg != ViewerBg.CurrentSkybox) { viewerBg = ViewerBg.CurrentSkybox; ApplyViewerBackground(); }
-            }
-            if (GUILayout.Toggle(viewerBg == ViewerBg.UnitySkybox, "Unity Skybox", "Button", GUILayout.Width(120)))
-            {
-                if (viewerBg != ViewerBg.UnitySkybox) { viewerBg = ViewerBg.UnitySkybox; ApplyViewerBackground(); }
-            }
-            if (GUILayout.Toggle(viewerBg == ViewerBg.ManualSkybox, "Manual Skybox", "Button", GUILayout.Width(120)))
-            {
-                if (viewerBg != ViewerBg.ManualSkybox) { viewerBg = ViewerBg.ManualSkybox; ApplyViewerBackground(); }
-            }
-
-            // External viewport controls
-            autoSyncViewport = GUILayout.Toggle(autoSyncViewport, "Auto-Sync Model View to Viewport", GUILayout.Width(240));
-            if (GUILayout.Button("Open Viewport", GUILayout.Width(110))) OpenViewport();
-            if (GUILayout.Button("Close Viewport", GUILayout.Width(110))) CloseViewport();
-            GUILayout.EndHorizontal();
-        }
-
-        // Manual skybox selector (only when ManualSkybox)
-        if (viewerBg == ViewerBg.ManualSkybox)
-        {
-            EditorGUILayout.BeginHorizontal();
-            manualSkyboxMat = (Material)EditorGUILayout.ObjectField(new GUIContent("Preview Skybox"), manualSkyboxMat, typeof(Material), false);
-            if (GUILayout.Button("Skybox Library", GUILayout.Width(130)))
-            {
-                OpenSkyboxLibrary();
-            }
-            EditorGUILayout.EndHorizontal();
-            EditorGUILayout.HelpBox("Manual skybox is preview-only. Your scene's RenderSettings are restored after drawing.", MessageType.Info);
-        }
-
-        var rect = GUILayoutUtility.GetRect(10, 10, 420, 420);
-        DrawPreview(rect);
-
-        // Controls under viewer
-        EditorGUILayout.BeginHorizontal();
-        if (GUILayout.Button("Re-center View", GUILayout.Height(24), GUILayout.Width(130)))
-        {
-            pvPan = Vector3.zero; pvUserAdjusted = false; Repaint();
-        }
-        GUILayout.FlexibleSpace();
-        GUILayout.Label("Load / Save", EditorStyles.miniBoldLabel, GUILayout.Width(80));
-        EditorGUILayout.EndHorizontal();
-
-        EditorGUILayout.BeginHorizontal();
-        savePath = EditorGUILayout.TextField(new GUIContent("Save Path"), savePath);
-        if (GUILayout.Button("Select…", GUILayout.Width(80)))
-        {
-            var suggested = System.IO.Path.GetFileName(savePath);
-            var path = EditorUtility.SaveFilePanelInProject("Save Prefab As",
-                string.IsNullOrEmpty(suggested) ? "CombinedPlaceholder" : suggested,
-                "prefab", "Choose save path");
-            if (!string.IsNullOrEmpty(path)) savePath = path;
-        }
-        EditorGUILayout.EndHorizontal();
-
-        EditorGUILayout.BeginHorizontal();
-        bool exactlyOne = CountPlaceholders(prefix) == 1;
-        GUI.enabled = exactlyOne;
-        if (GUILayout.Button("Save From Preview As…", GUILayout.Height(28)))
-            SaveFromPreviewSingle();
-        GUI.enabled = true;
-
-        if (GUILayout.Button("Load Asset From File", GUILayout.Height(28), GUILayout.Width(180)))
-        {
-            EditorUtility.DisplayDialog("Import Info",
-                "To load external models (.fbx/.obj/.gltf), import them into the Project first. Then drag them here or pick via the library.",
-                "OK");
-        }
-        EditorGUILayout.EndHorizontal();
-
-        int count = CountPlaceholders(prefix);
-        if (count == 0)
-            EditorGUILayout.HelpBox("Nothing to save, search for objects via a prefix to enable saving.", MessageType.Info);
-        else if (count > 1 && !combineIntoOne)
-            EditorGUILayout.HelpBox("Multiple placeholders detected. Combine all objects first to enable single-object Save From Preview.", MessageType.Warning);
-
-        EditorGUILayout.Space(6);
-        EditorGUILayout.BeginHorizontal();
-        GUI.enabled = CanSwitchNow();
-        if (GUILayout.Button("Switch Placeholders", GUILayout.Height(36)))
-            RunSwitch(replaceMode: targetPrefab != null);
-        GUI.enabled = true;
-
-        autoSwitch = GUILayout.Toggle(autoSwitch, "Auto Switch", GUILayout.Width(110));
-        EditorGUILayout.EndHorizontal();
-    }
-
+    // ---------- Viewer ----------
     private void ApplyViewerBackground()
     {
         if (preview == null) return;
@@ -360,12 +355,12 @@ public class PlaceholderSwitcher : EditorWindow
         switch (viewerBg)
         {
             case ViewerBg.CurrentSkybox:
-            case ViewerBg.ManualSkybox:
                 cam.clearFlags = CameraClearFlags.Skybox;
                 break;
             case ViewerBg.UnitySkybox:
+                // emulate default “brown ground + sky”
                 cam.clearFlags = CameraClearFlags.Color;
-                cam.backgroundColor = new Color(0.58f, 0.76f, 0.96f); // "Unity-like" sky tint
+                cam.backgroundColor = new Color(0.58f, 0.76f, 0.96f); // sky-ish
                 break;
         }
     }
@@ -374,85 +369,64 @@ public class PlaceholderSwitcher : EditorWindow
     {
         if (preview == null) return;
 
+        // Gather candidates
         var candidates = (prefix.Length >= 3)
             ? Resources.FindObjectsOfTypeAll<Transform>()
                 .Where(t => t && t.gameObject.scene.IsValid() && t.gameObject.name.StartsWith(prefix))
                 .Select(t => t.gameObject).ToList()
             : new List<GameObject>();
 
-        bool hasDesired = targetPrefab != null;
         bool hasAny = candidates.Count > 0;
 
+        // Pick pivot & distance
         Vector3 pivot = GetPreviewPivot(candidates) + pvPan;
 
         if (!pvUserAdjusted)
         {
-            Bounds b;
-            if (TryCalcBoundsForPreview(candidates, hasDesired ? targetPrefab : null, out b))
+            if (TryCalcBoundsForPreview(candidates, targetPrefab, out var b))
             {
                 var halfFovRad = preview.cameraFieldOfView * 0.5f * Mathf.Deg2Rad;
                 var radius = Mathf.Max(b.extents.x, b.extents.y, b.extents.z);
                 pvDist = Mathf.Clamp(radius / Mathf.Tan(halfFovRad) + radius * 0.4f, 0.8f, 5000f);
                 pivot = b.center;
             }
-            else
-            {
-                pvDist = 6f;
-            }
+            else pvDist = 6f;
         }
 
-        // Temporarily override RenderSettings.skybox for ManualSkybox
-        var prevSkybox = RenderSettings.skybox;
-        bool overrideSkybox = viewerBg == ViewerBg.ManualSkybox && manualSkyboxMat != null;
-        if (overrideSkybox) RenderSettings.skybox = manualSkyboxMat;
-
-        try
+        if (Event.current.type == EventType.Repaint)
         {
-            if (Event.current.type == EventType.Repaint)
+            preview.BeginPreview(rect, GUIStyle.none);
+
+            var cam = preview.camera;
+            var rot = Quaternion.Euler(pvPitch, pvYaw, 0f);
+            cam.transform.position = pivot + rot * (Vector3.back * pvDist);
+            cam.transform.rotation = Quaternion.LookRotation(pivot - cam.transform.position, Vector3.up);
+            cam.nearClipPlane = 0.01f;
+            cam.farClipPlane = 10000f;
+
+            // UnitySkybox ground plane (to sell the “basic/editor” feel)
+            if (viewerBg == ViewerBg.UnitySkybox)
             {
-                preview.BeginPreview(rect, GUIStyle.none);
+                var groundMat = fallbackMat;
+                var plane = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
+                var gmtx = Matrix4x4.TRS(new Vector3(pivot.x, pivot.y - 1000f, pivot.z), Quaternion.identity, new Vector3(10000f, 1f, 10000f));
+                EditorGUI.DrawRect(new Rect()); // no-op, keeps analyzer happy
+                preview.DrawMesh(plane, gmtx, groundMat, 0);
+            }
 
-                var cam = preview.camera;
-                var rot = Quaternion.Euler(pvPitch, pvYaw, 0f);
-                cam.transform.position = pivot + rot * (Vector3.back * pvDist);
-                cam.transform.rotation = Quaternion.LookRotation(pivot - cam.transform.position, Vector3.up);
-                cam.nearClipPlane = 0.01f;
-                cam.farClipPlane = 10000f;
-
-                if (hasAny)
+            if (hasAny)
+            {
+                if (targetPrefab != null)
                 {
-                    if (hasDesired)
+                    var meshes = GetMeshesFromPrefab(targetPrefab);
+                    if (meshes.Count == 0)
                     {
-                        var meshes = GetMeshesFromPrefab(targetPrefab);
-                        if (meshes.Count == 0)
+                        var cube = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
+                        foreach (var go in candidates)
                         {
-                            var cube = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
-                            foreach (var go in candidates)
-                            {
-                                if (!go) continue;
-                                var mtx = Matrix4x4.TRS(go.transform.position, Quaternion.identity, Vector3.one);
-                                preview.DrawMesh(cube, mtx, fallbackMat, 0);
-                            }
-                        }
-                        else
-                        {
-                            foreach (var go in candidates)
-                            {
-                                if (!go) continue;
-                                foreach (var (mesh, mats) in meshes)
-                                {
-                                    var mtx = Matrix4x4.TRS(go.transform.position, Quaternion.identity, Vector3.one);
-                                    if (mats != null && mats.Length > 0)
-                                    {
-                                        for (int i = 0; i < Mathf.Min(mesh.subMeshCount, mats.Length); i++)
-                                            preview.DrawMesh(mesh, mtx, mats[i] ? mats[i] : fallbackMat, i);
-                                    }
-                                    else
-                                    {
-                                        preview.DrawMesh(mesh, mtx, fallbackMat, 0);
-                                    }
-                                }
-                            }
+                            if (!go) continue;
+                            var mtx = Matrix4x4.TRS(go.transform.position, Quaternion.identity, Vector3.one);
+                            preview.DrawMesh(cube, mtx, fallbackMat, 0);
                         }
                     }
                     else
@@ -460,59 +434,76 @@ public class PlaceholderSwitcher : EditorWindow
                         foreach (var go in candidates)
                         {
                             if (!go) continue;
-                            var mf = go.GetComponent<MeshFilter>();
-                            var mr = go.GetComponent<MeshRenderer>();
-                            if (mf != null && mf.sharedMesh != null)
+                            foreach (var (mesh, mats) in meshes)
                             {
-                                var mtx = go.transform.localToWorldMatrix;
-                                var mats = (mr != null && mr.sharedMaterials != null && mr.sharedMaterials.Length > 0)
-                                    ? mr.sharedMaterials
-                                    : new[] { fallbackMat };
-                                for (int s = 0; s < Mathf.Min(mf.sharedMesh.subMeshCount, mats.Length); s++)
-                                    preview.DrawMesh(mf.sharedMesh, mtx, mats[s] ? mats[s] : fallbackMat, s);
-                            }
-                            else
-                            {
-                                var cube = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
-                                var mtx = go.transform.localToWorldMatrix;
-                                preview.DrawMesh(cube, mtx, fallbackMat, 0);
+                                var mtx = Matrix4x4.TRS(go.transform.position, Quaternion.identity, Vector3.one);
+                                if (mats != null && mats.Length > 0)
+                                {
+                                    for (int i = 0; i < Mathf.Min(mesh.subMeshCount, mats.Length); i++)
+                                        preview.DrawMesh(mesh, mtx, mats[i] ? mats[i] : fallbackMat, i);
+                                }
+                                else
+                                {
+                                    preview.DrawMesh(mesh, mtx, fallbackMat, 0);
+                                }
                             }
                         }
                     }
                 }
                 else
                 {
-                    DrawHelperOverlay(rect,
-                        "No objects to preview.\n\nEnter a 3+ character prefix and/or pick a Desired Asset (Prefab).\n" +
-                        "Tip: Open the GameObject Library to find assets.\nTry seeds and Location Offset to craft variants — have fun!");
+                    // Show actual placeholders (not just cubes) when they have meshes
+                    foreach (var go in candidates)
+                    {
+                        if (!go) continue;
+                        var mfs = go.GetComponentsInChildren<MeshFilter>();
+                        if (mfs != null && mfs.Length > 0)
+                        {
+                            foreach (var mf in mfs)
+                            {
+                                if (!mf || mf.sharedMesh == null) continue;
+                                var mr = mf.GetComponent<MeshRenderer>();
+                                var mats = (mr && mr.sharedMaterials != null && mr.sharedMaterials.Length > 0) ? mr.sharedMaterials : new[] { fallbackMat };
+                                for (int s = 0; s < Mathf.Min(mf.sharedMesh.subMeshCount, mats.Length); s++)
+                                    preview.DrawMesh(mf.sharedMesh, mf.transform.localToWorldMatrix, mats[s] ? mats[s] : fallbackMat, s);
+                            }
+                        }
+                        else
+                        {
+                            var cube = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
+                            preview.DrawMesh(cube, go.transform.localToWorldMatrix, fallbackMat, 0);
+                        }
+                    }
                 }
-
-                preview.camera.Render();
-                var tex = preview.EndPreview();
-                GUI.DrawTexture(rect, tex, UnityEngine.ScaleMode.StretchToFill, false); // NOTE: fully-qualified to avoid enum clash
             }
-        }
-        finally
-        {
-            // Restore project skybox immediately
-            if (overrideSkybox) RenderSettings.skybox = prevSkybox;
+            else
+            {
+                // Dark overlay with helpful message
+                DrawHelperOverlay(rect,
+                    "Enter a prefix (≥ 3 chars) and choose a Desired Asset (Prefab) to view preview.\n\n" +
+                    "Tip: Open the GameObject Library to quickly pick an asset.\n" +
+                    "Try seeds + Location Offset to craft variants — have fun!");
+            }
+
+            cam.Render();
+            var tex = preview.EndPreview();
+            GUI.DrawTexture(rect, tex, UnityEngine.ScaleMode.StretchToFill, false); // NOTE: fully-qualified
         }
 
-        // Mouse controls
+        // Mouse controls inside rect
         if (rect.Contains(Event.current.mousePosition))
         {
-            if (Event.current.type == EventType.MouseDrag)
+            // Orbit
+            if (Event.current.type == EventType.MouseDrag && Event.current.button == 0 && !Event.current.shift)
             {
-                if (Event.current.button == 0) // orbit
-                {
-                    pvUserAdjusted = true;
-                    float invY = orbitInvertY ? -1f : 1f;
-                    float invX = orbitInvertX ? -1f : 1f;
-                    pvYaw   += invX * Event.current.delta.x * 0.5f;
-                    pvPitch = Mathf.Clamp(pvPitch + invY * Event.current.delta.y * 0.5f, -80f, 80f);
-                    Repaint();
-                }
+                pvUserAdjusted = true;
+                float invY = orbitInvertY ? -1f : 1f;
+                float invX = orbitInvertX ? -1f : 1f;
+                pvYaw   += invX * Event.current.delta.x * 0.5f;
+                pvPitch = Mathf.Clamp(pvPitch + invY * Event.current.delta.y * 0.5f, -80f, 80f);
+                Repaint();
             }
+            // Pan (Shift+LMB)
             if (Event.current.type == EventType.MouseDrag && Event.current.button == 0 && Event.current.shift)
             {
                 pvUserAdjusted = true;
@@ -522,6 +513,7 @@ public class PlaceholderSwitcher : EditorWindow
                 pvPan += (-right * Event.current.delta.x + up * Event.current.delta.y) * panScale;
                 Repaint();
             }
+            // Zoom
             if (Event.current.type == EventType.ScrollWheel)
             {
                 pvUserAdjusted = true;
@@ -530,85 +522,26 @@ public class PlaceholderSwitcher : EditorWindow
             }
         }
 
+        // Controls recap row
         EditorGUILayout.BeginHorizontal();
         GUILayout.Label("Controls", EditorStyles.miniLabel, GUILayout.Width(60));
         orbitInvertY = GUILayout.Toggle(orbitInvertY, "Y Inverted", GUILayout.Width(90));
         orbitInvertX = GUILayout.Toggle(orbitInvertX, "X Inverted", GUILayout.Width(90));
+        if (GUILayout.Button("Re-center View", GUILayout.Width(130)))
+        {
+            pvPan = Vector3.zero; pvUserAdjusted = false; Repaint();
+        }
         GUILayout.FlexibleSpace();
         EditorGUILayout.EndHorizontal();
     }
 
     private void DrawHelperOverlay(Rect rect, string message)
     {
-        var c = new Color(0f, 0f, 0f, 0.5f);
+        var c = new Color(0f, 0f, 0f, 0.55f);
         EditorGUI.DrawRect(rect, c);
         var style = new GUIStyle(EditorStyles.wordWrappedLabel)
         { alignment = TextAnchor.MiddleCenter, normal = { textColor = Color.white } };
         GUI.Label(rect, message, style);
-    }
-
-    private void UpdateExternalViewport()
-    {
-        if (externalViewport == null) return;
-
-        var candidates = (prefix.Length >= 3)
-            ? Resources.FindObjectsOfTypeAll<Transform>()
-                .Where(t => t && t.gameObject.scene.IsValid() && t.gameObject.name.StartsWith(prefix))
-                .Select(t => t.gameObject).ToList()
-            : new List<GameObject>();
-
-        Bounds b;
-        if (!TryCalcBoundsForPreview(candidates, targetPrefab, out b)) return;
-
-        var pivot = b.center;
-        float dist = Mathf.Max(b.extents.magnitude * 2f, 2f);
-
-        var dir = Quaternion.Euler(pvPitch, pvYaw, 0f) * Vector3.back;
-        var pos = pivot + dir * dist;
-        externalViewport.LookAtDirect(pivot, Quaternion.LookRotation(pivot - pos, Vector3.up), dist);
-        externalViewport.Repaint();
-    }
-
-    private void OpenViewport()
-    {
-        if (externalViewport == null)
-        {
-            externalViewport = ScriptableObject.CreateInstance<SceneView>();
-            externalViewport.titleContent = new GUIContent("Placeholder Viewport");
-            externalViewport.ShowUtility();
-            externalViewport.wantsMouseMove = true;
-        }
-    }
-
-    private void CloseViewport()
-    {
-        if (externalViewport != null) { externalViewport.Close(); externalViewport = null; }
-    }
-
-    private void OpenLibrary()
-    {
-        if (libraryWindow == null)
-        {
-            libraryWindow = ScriptableObject.CreateInstance<LibraryWindow>();
-            libraryWindow.Init(this);
-            libraryWindow.ShowUtility();
-            var r = position;
-            libraryWindow.position = new Rect(r.xMax + 6, r.yMin, Mathf.Max(520, r.width * 0.45f), Mathf.Max(520, r.height - 40));
-        }
-        else libraryWindow.Focus();
-    }
-
-    private void OpenSkyboxLibrary()
-    {
-        if (skyboxLibraryWindow == null)
-        {
-            skyboxLibraryWindow = ScriptableObject.CreateInstance<SkyboxLibraryWindow>();
-            skyboxLibraryWindow.Init(this);
-            skyboxLibraryWindow.ShowUtility();
-            var r = position;
-            skyboxLibraryWindow.position = new Rect(r.xMax + 6, r.yMin, Mathf.Max(420, r.width * 0.38f), Mathf.Max(520, r.height - 40));
-        }
-        else skyboxLibraryWindow.Focus();
     }
 
     private bool TryCalcBoundsForPreview(List<GameObject> candidates, GameObject desired, out Bounds b)
@@ -619,8 +552,8 @@ public class PlaceholderSwitcher : EditorWindow
             foreach (var go in candidates)
             {
                 if (!go) continue;
-                var r = go.GetComponent<Renderer>();
-                if (r) { first = r; break; }
+                var rr = go.GetComponentInChildren<Renderer>();
+                if (rr) { first = rr; break; }
             }
             if (first != null)
             {
@@ -628,7 +561,7 @@ public class PlaceholderSwitcher : EditorWindow
                 foreach (var go in candidates)
                 {
                     if (!go) continue;
-                    var r = go.GetComponent<Renderer>();
+                    var r = go.GetComponentInChildren<Renderer>();
                     if (r) b.Encapsulate(r.bounds);
                     else b.Encapsulate(new Bounds(go.transform.position, Vector3.one));
                 }
@@ -641,8 +574,7 @@ public class PlaceholderSwitcher : EditorWindow
             var meshes = GetMeshesFromPrefab(desired);
             if (meshes.Count > 0)
             {
-                var mesh = meshes[0].mesh;
-                b = new Bounds(Vector3.zero, mesh.bounds.size);
+                b = meshes[0].mesh.bounds;
                 return true;
             }
         }
@@ -668,33 +600,32 @@ public class PlaceholderSwitcher : EditorWindow
                 foreach (var go in candidates)
                 {
                     if (!go) continue;
-                    var r = go.GetComponent<Renderer>();
-                    if (r) b.Encapsulate(r.bounds);
-                    else b.Encapsulate(new Bounds(go.transform.position, Vector3.zero));
+                    var r = go.GetComponentInChildren<Renderer>();
+                    if (r) b.Encapsulate(r.bounds); else b.Encapsulate(new Bounds(go.transform.position, Vector3.zero));
                 }
                 return b.center;
             case PivotMode.WorldOrigin:
                 return Vector3.zero;
             case PivotMode.SelectedObject:
-                if (Selection.activeTransform) return Selection.activeTransform.position;
-                return Vector3.zero;
+                return Selection.activeTransform ? Selection.activeTransform.position : Vector3.zero;
         }
         return Vector3.zero;
     }
 
-    // ---------------- RIGHT: Transform Tools ----------------
+    // ---------- Right column: sections ----------
     private void DrawRightColumnHeader(string title)
     {
-        using (new DarkHeaderScope(SectionHeaderHeight))
+        using (new DarkHeader(SectionHeaderHeight))
         {
-            GUILayout.Label(title, EditorStyles.boldLabel, GUILayout.Height(SectionHeaderHeight));
+            var hdr = new GUIStyle(EditorStyles.boldLabel) { fontSize = 14 };
+            GUILayout.Label(title, hdr, GUILayout.Height(SectionHeaderHeight));
         }
         EditorGUILayout.Space(2);
     }
 
     private void DrawRotationOffset()
     {
-        using (new DarkHeaderScope(SectionHeaderHeight)) { GUILayout.Label("Rotation Offset", EditorStyles.boldLabel); }
+        using (new DarkHeader(SectionHeaderHeight)) { GUILayout.Label("Rotation Offset", HeaderStyle()); }
         rotationMode = (RotationMode)EditorGUILayout.EnumPopup(new GUIContent("Rotation Mode"), rotationMode);
 
         EditorGUILayout.BeginHorizontal();
@@ -703,7 +634,7 @@ public class PlaceholderSwitcher : EditorWindow
                         "Rotation (offset on top of seeded Y)", GUILayout.Width(240));
         rotationEuler = EditorGUILayout.Vector3Field(GUIContent.none, rotationEuler);
         EditorGUILayout.EndHorizontal();
-        DrawVector3Sliders(ref rotationEuler, -360f, 360f);
+        DrawVector3TripletSliders(ref rotationEuler, -360f, 360f);
 
         if (rotationMode == RotationMode.SeedValueOnY)
         {
@@ -712,16 +643,17 @@ public class PlaceholderSwitcher : EditorWindow
             if (GUILayout.Button("Randomise Seed", GUILayout.Width(130)))
                 rotationSeed = UnityEngine.Random.Range(1, int.MaxValue);
             EditorGUILayout.EndHorizontal();
-            EditorGUILayout.HelpBox("Deterministic per-object Y rotation using the seed. The XYZ above is applied on top.", MessageType.Info);
+            EditorGUILayout.HelpBox("Deterministic per-object Y rotation from seed. XYZ above is added on top.", MessageType.Info);
         }
         EditorGUILayout.Space(4);
     }
 
     private void DrawScaleOffset()
     {
-        using (new DarkHeaderScope(SectionHeaderHeight)) { GUILayout.Label("Scale Offset", EditorStyles.boldLabel); }
+        using (new DarkHeader(SectionHeaderHeight)) { GUILayout.Label("Scale Offset", HeaderStyle()); }
         scaleMode = (ScaleMode)EditorGUILayout.EnumPopup(new GUIContent("Scaling Mode"), scaleMode);
 
+        // unified scale with fader
         EditorGUILayout.BeginHorizontal();
         GUILayout.Label(scaleMode == ScaleMode.PlaceholderScale ? "Scale (multiplies placeholder scale)" :
                         scaleMode == ScaleMode.NewScale ? "Scale (new uniform)" :
@@ -755,14 +687,14 @@ public class PlaceholderSwitcher : EditorWindow
 
     private void DrawLocationOffset()
     {
-        using (new DarkHeaderScope(SectionHeaderHeight)) { GUILayout.Label("Location Offset", EditorStyles.boldLabel); }
+        using (new DarkHeader(SectionHeaderHeight)) { GUILayout.Label("Location Offset", HeaderStyle()); }
         locationSpace = (OffsetSpace)EditorGUILayout.EnumPopup(new GUIContent("Location Transform Mode"), locationSpace);
 
         EditorGUILayout.BeginHorizontal();
         GUILayout.Label("Location Transform", GUILayout.Width(160));
         locationOffset = EditorGUILayout.Vector3Field(GUIContent.none, locationOffset);
         EditorGUILayout.EndHorizontal();
-        DrawVector3Sliders(ref locationOffset, -100f, 100f);
+        DrawVector3TripletSliders(ref locationOffset, -100f, 100f);
 
         EditorGUILayout.BeginHorizontal();
         locationSeed = SafeInt64(EditorGUILayout.LongField(new GUIContent("Random location seed"), locationSeed), 1, 9999999999L);
@@ -787,7 +719,7 @@ public class PlaceholderSwitcher : EditorWindow
 
     private void DrawParenting()
     {
-        using (new DarkHeaderScope(SectionHeaderHeight)) { GUILayout.Label("Parenting", EditorStyles.boldLabel); }
+        using (new DarkHeader(SectionHeaderHeight)) { GUILayout.Label("Parenting", HeaderStyle()); }
         using (new EditorGUI.DisabledScope(groupWithEmptyParent))
         {
             var newParent = (Transform)EditorGUILayout.ObjectField(new GUIContent("Parent (optional)"), explicitParent, typeof(Transform), true);
@@ -814,7 +746,7 @@ public class PlaceholderSwitcher : EditorWindow
 
     private void DrawCombineAndMove()
     {
-        using (new DarkHeaderScope(SectionHeaderHeight)) { GUILayout.Label("Combine / Move", EditorStyles.boldLabel); }
+        using (new DarkHeader(SectionHeaderHeight)) { GUILayout.Label("Combine / Move", HeaderStyle()); }
 
         combineIntoOne = EditorGUILayout.Toggle(new GUIContent("Combine objects into one", "Static content only"), combineIntoOne);
         if (combineIntoOne)
@@ -847,7 +779,7 @@ public class PlaceholderSwitcher : EditorWindow
 
     private void DrawConvertAndCollision()
     {
-        using (new DarkHeaderScope(SectionHeaderHeight)) { GUILayout.Label("Rebuild Instanced Collision", EditorStyles.boldLabel); }
+        using (new DarkHeader(SectionHeaderHeight)) { GUILayout.Label("Rebuild Instanced Collision", HeaderStyle()); }
 
         convertToShrub = EditorGUILayout.Toggle(new GUIContent("Convert to Shrub"), convertToShrub);
         using (new EditorGUI.DisabledScope(!convertToShrub))
@@ -859,15 +791,15 @@ public class PlaceholderSwitcher : EditorWindow
         EditorGUILayout.Space(4);
     }
 
-    // ---------------- ACTIONS ----------------
+    private GUIStyle HeaderStyle() => new GUIStyle(EditorStyles.boldLabel) { fontSize = 12 };
+
+    // =================== Actions ===================
     private static bool IsPrefabAsset(GameObject go)
     {
         if (!go) return false;
         var t = PrefabUtility.GetPrefabAssetType(go);
         return t != PrefabAssetType.NotAPrefab && t != PrefabAssetType.MissingAsset;
     }
-
-    private bool autoSwitchWarningShown = false;
 
     private void RunSwitch(bool replaceMode)
     {
@@ -916,7 +848,7 @@ public class PlaceholderSwitcher : EditorWindow
             {
                 var src = candidates[i];
                 if (!src) continue;
-                if (EditorUtility.DisplayCancelableProgressBar("Processing Placeholders", $"Processing {i + 1}/{candidates.Count}: {src.name}", (float)(i + 1) / candidates.Count))
+                if (EditorUtility.DisplayCancelableProgressBar("Processing", $"Processing {i + 1}/{candidates.Count}: {src.name}", (float)(i + 1) / candidates.Count))
                     break;
 
                 Transform groupingParent = explicitParent ? explicitParent : null;
@@ -988,8 +920,6 @@ public class PlaceholderSwitcher : EditorWindow
             if (finalRoot != null) TryRebuildInstancedCollision(finalRoot);
             else foreach (var go in spawned) if (go) TryRebuildInstancedCollision(go);
         }
-
-        EditorUtility.DisplayDialog("Done", $"Processed {candidates.Count} placeholder(s).{(combineIntoOne ? " Combined into one." : "")}", "Nice");
     }
 
     private Vector3 GetMoveTargetPosition(MoveTarget t, List<GameObject> set, GameObject finalRootIfAny)
@@ -1010,7 +940,6 @@ public class PlaceholderSwitcher : EditorWindow
                 if (finalRootIfAny && finalRootIfAny.transform.parent) return finalRootIfAny.transform.parent.position;
                 if (!finalRootIfAny && explicitParent) return explicitParent.position;
                 return Vector3.zero;
-            case MoveTarget.None:
             default:
                 return Vector3.zero;
         }
@@ -1038,7 +967,7 @@ public class PlaceholderSwitcher : EditorWindow
 
         inst.transform.localPosition = localPos;
         inst.transform.localRotation = localRot;
-        inst.transform.localScale = localScale;
+        inst.transform.localScale    = localScale;
 
         inst.layer = layer;
         try { inst.tag = tag; } catch { }
@@ -1054,6 +983,7 @@ public class PlaceholderSwitcher : EditorWindow
 
     private void ApplyTransforms(GameObject go, out Quaternion outRot, out Vector3 outScale)
     {
+        // Rotation
         Quaternion finalRot;
         switch (rotationMode)
         {
@@ -1075,11 +1005,13 @@ public class PlaceholderSwitcher : EditorWindow
         }
         go.transform.localRotation = finalRot;
 
+        // Scale (unified + per-axis affect + per-axis clamp for seeded)
         Vector3 s = go.transform.localScale;
         Vector3 finalS = s;
         switch (scaleMode)
         {
             case ScaleMode.PlaceholderScale:
+                finalS = s;
                 ApplyScaleUnified(ref finalS, scaleUnified);
                 break;
             case ScaleMode.NewScale:
@@ -1099,14 +1031,13 @@ public class PlaceholderSwitcher : EditorWindow
                                          scaleAffectY ? ry : s.y,
                                          scaleAffectZ ? rz : s.z);
 
-                    if (scaleAffectX) finalS.x *= scaleUnified;
-                    if (scaleAffectY) finalS.y *= scaleUnified;
-                    if (scaleAffectZ) finalS.z *= scaleUnified;
+                    ApplyScaleUnified(ref finalS, scaleUnified);
                 }
                 break;
         }
         go.transform.localScale = finalS;
 
+        // Location
         {
             Vector3 offset = locationOffset;
             int hash = (go.GetInstanceID() ^ (go.name.GetHashCode() << 1));
@@ -1136,6 +1067,7 @@ public class PlaceholderSwitcher : EditorWindow
         if (scaleAffectZ) v.z *= mul;
     }
 
+    // ---------- Helpers ----------
     private static Vector3 GetWorldCenter(List<GameObject> objects)
     {
         var b = new Bounds();
@@ -1143,7 +1075,7 @@ public class PlaceholderSwitcher : EditorWindow
         foreach (var go in objects)
         {
             if (!go) continue;
-            var r = go.GetComponent<Renderer>();
+            var r = go.GetComponentInChildren<Renderer>();
             var c = r ? r.bounds.center : go.transform.position;
             if (!init) { b = new Bounds(c, Vector3.zero); init = true; }
             else b.Encapsulate(c);
@@ -1185,7 +1117,7 @@ public class PlaceholderSwitcher : EditorWindow
                 foreach (var go in sceneCandidates)
                 {
                     if (!go) continue;
-                    var r = go.GetComponent<Renderer>();
+                    var r = go.GetComponentInChildren<Renderer>();
                     if (r != null) b.Encapsulate(r.bounds); else b.Encapsulate(new Bounds(go.transform.position, Vector3.zero));
                 }
                 return b.center;
@@ -1206,8 +1138,8 @@ public class PlaceholderSwitcher : EditorWindow
         foreach (var go in instances)
         {
             if (!go) continue;
-            var mf = go.GetComponent<MeshFilter>();
-            var mr = go.GetComponent<MeshRenderer>();
+            var mf = go.GetComponentInChildren<MeshFilter>();
+            var mr = go.GetComponentInChildren<MeshRenderer>();
             if (mf && mf.sharedMesh && mr) { filters.Add(mf); renderers.Add(mr); }
         }
         if (filters.Count == 0) { Debug.LogWarning("No MeshFilters found to combine."); return null; }
@@ -1222,7 +1154,7 @@ public class PlaceholderSwitcher : EditorWindow
                 pivotWS = filters[0].transform.position; break;
             case PivotMode.BoundsCenter:
                 var b = new Bounds(filters[0].transform.position, Vector3.zero);
-                foreach (var mf in filters) { var r = mf.GetComponent<Renderer>(); if (r) b.Encapsulate(r.bounds); else b.Encapsulate(new Bounds(mf.transform.position, Vector3.zero)); }
+                foreach (var mf in filters) { var r = mf.GetComponentInChildren<Renderer>(); if (r) b.Encapsulate(r.bounds); else b.Encapsulate(new Bounds(mf.transform.position, Vector3.zero)); }
                 pivotWS = b.center; break;
             case PivotMode.WorldOrigin:
                 pivotWS = Vector3.zero; break;
@@ -1278,7 +1210,7 @@ public class PlaceholderSwitcher : EditorWindow
         if (!existing) existing = Undo.AddComponent(go, type);
 
         var so = new SerializedObject((Component)existing);
-        SerializedProperty rd = so.FindProperty("RenderDistance") ?? so.FindProperty("renderDistance") ?? so.FindProperty("distance");
+        var rd = so.FindProperty("RenderDistance") ?? so.FindProperty("renderDistance") ?? so.FindProperty("distance");
         if (rd != null && rd.propertyType == SerializedPropertyType.Integer)
         {
             rd.intValue = renderDistance;
@@ -1329,7 +1261,7 @@ public class PlaceholderSwitcher : EditorWindow
         }
         else
         {
-            var mf = go.GetComponent<MeshFilter>();
+            var mf = go.GetComponentInChildren<MeshFilter>();
             if (mf && mf.sharedMesh)
             {
                 var mc = go.GetComponent<MeshCollider>();
@@ -1359,14 +1291,40 @@ public class PlaceholderSwitcher : EditorWindow
         return null;
     }
 
+    // ---------- Library ----------
+    private void OpenLibrary()
+    {
+        // Acts as a picker; use Object Selector (built-in) with prefab filter
+        EditorGUIUtility.ShowObjectPicker<GameObject>(targetPrefab, false, "t:Prefab", 987654);
+    }
+    private void OnGUIObjectPicker()
+    {
+        // reserved if we used events; not strictly needed here
+    }
+    private void Update()
+    {
+        // Catch ObjectSelector changes
+        if (Event.current != null) return;
+        var cmd = EditorGUIUtility.GetObjectPickerControlID();
+        if (cmd == 987654)
+        {
+            var picked = EditorGUIUtility.GetObjectPickerObject() as GameObject;
+            if (picked != null && picked != targetPrefab)
+            {
+                targetPrefab = picked;
+                Repaint();
+            }
+        }
+    }
+
+    // ---------- Misc helpers ----------
     private static string ApplyIncremental(string baseName, bool incremental)
     {
         if (!incremental) return baseName;
-        int num;
-        if (!TempCounter.TryGetValue(baseName, out num)) num = 0;
-        num++;
-        TempCounter[baseName] = num;
-        return $"{baseName}_{num:000}";
+        if (!TempCounter.TryGetValue(baseName, out var n)) n = 0;
+        n++;
+        TempCounter[baseName] = n;
+        return $"{baseName}_{n:000}";
     }
     private static readonly Dictionary<string, int> TempCounter = new Dictionary<string, int>();
 
@@ -1409,17 +1367,16 @@ public class PlaceholderSwitcher : EditorWindow
         min = sMin; max = sMax;
     }
 
-    private void DrawVector3Sliders(ref Vector3 v, float min, float max)
+    private void DrawVector3TripletSliders(ref Vector3 v, float min, float max)
     {
-        float x = v.x, y = v.y, z = v.z;
-        EditorGUILayout.MinMaxSlider(new GUIContent("X"), ref x, ref x, min, max); v.x = x;
-        EditorGUILayout.MinMaxSlider(new GUIContent("Y"), ref y, ref y, min, max); v.y = y;
-        EditorGUILayout.MinMaxSlider(new GUIContent("Z"), ref z, ref z, min, max); v.z = z;
+        // one slider per component, aligned below the fields
+        v.x = EditorGUILayout.Slider("X", v.x, min, max);
+        v.y = EditorGUILayout.Slider("Y", v.y, min, max);
+        v.z = EditorGUILayout.Slider("Z", v.z, min, max);
     }
 
-    // -------- local param undo --------
+    // ------------- local param undo -------------
     [Serializable] private class ParamSnapshot { public string json; }
-
     private string SnapshotParamsToJson() => JsonUtility.ToJson(this, false);
     private void RestoreParamsFromJson(string json) => JsonUtility.FromJsonOverwrite(json, this);
 
@@ -1435,9 +1392,7 @@ public class PlaceholderSwitcher : EditorWindow
             undoIndex = undoStack.Count - 1;
         }
     }
-
     private bool CanUndoLocal() => undoIndex > 0;
-
     private void UndoLocal()
     {
         if (!CanUndoLocal()) return;
@@ -1478,184 +1433,17 @@ public class PlaceholderSwitcher : EditorWindow
         PushUndoSnapshot();
     }
 
-    private void SaveFromPreviewSingle()
+    // -------- Sky / library utilities (minimal) --------
+    private class DarkHeader : IDisposable
     {
-        int count = CountPlaceholders(prefix);
-        if (count != 1)
-        {
-            EditorUtility.DisplayDialog("Not a single object", "This action requires exactly one placeholder match.", "OK");
-            return;
-        }
-
-        var go = Resources.FindObjectsOfTypeAll<Transform>()
-            .Select(t => t ? t.gameObject : null)
-            .FirstOrDefault(g => g && g.scene.IsValid() && g.name.StartsWith(prefix));
-        if (!go) return;
-
-        var root = new GameObject(string.IsNullOrEmpty(forcedName) ? "SavedFromPreview" : forcedName);
-        Undo.RegisterCreatedObjectUndo(root, "Create temp save root");
-        root.transform.position = go.transform.position;
-        go.transform.SetParent(root.transform, true);
-
-        var prefab = PrefabUtility.SaveAsPrefabAsset(root, savePath);
-        if (prefab != null) Debug.Log($"Saved prefab: {savePath}"); else Debug.LogError("Failed to save prefab.");
-
-        go.transform.SetParent(null, true);
-        Undo.DestroyObjectImmediate(root);
-    }
-
-    // -------- Themed header scope --------
-    private struct DarkHeaderScope : IDisposable
-    {
-        private readonly Rect rect;
-        public DarkHeaderScope(float height)
+        Rect rect;
+        public DarkHeader(float height)
         {
             rect = GUILayoutUtility.GetRect(0, height, GUILayout.ExpandWidth(true));
             EditorGUI.DrawRect(rect, new Color(0.18f, 0.18f, 0.18f));
-            GUILayout.Space(-height + 2f);
+            GUILayout.BeginArea(rect);
         }
-        public void Dispose() { }
-    }
-
-    // -------- Prefab library window --------
-    private class LibraryWindow : EditorWindow
-    {
-        private string search = "";
-        private float thumbSize = 96f;
-        private Vector2 scroll;
-        private List<GameObject> prefabs = new List<GameObject>();
-        private PlaceholderSwitcher owner;
-
-        public void Init(PlaceholderSwitcher o) { owner = o; Refresh(); }
-
-        private void OnGUI()
-        {
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("GameObject Library", EditorStyles.boldLabel);
-            GUILayout.FlexibleSpace();
-            GUILayout.Label("Thumb Size", GUILayout.Width(70));
-            thumbSize = GUILayout.HorizontalSlider(thumbSize, 48f, 196f, GUILayout.Width(160));
-            GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Search", GUILayout.Width(50));
-            var ns = GUILayout.TextField(search);
-            if (ns != search) { search = ns; Refresh(); }
-            if (GUILayout.Button("Refresh", GUILayout.Width(80))) Refresh();
-            GUILayout.EndHorizontal();
-
-            scroll = GUILayout.BeginScrollView(scroll);
-            float col = Mathf.Max(1, Mathf.Floor(position.width / (thumbSize + 16f)));
-            int perRow = Mathf.Clamp((int)col, 1, 8);
-
-            int i = 0;
-            GUILayout.BeginHorizontal();
-            foreach (var p in prefabs)
-            {
-                if (i > 0 && i % perRow == 0)
-                {
-                    GUILayout.EndHorizontal();
-                    GUILayout.BeginHorizontal();
-                }
-                DrawThumb(p);
-                i++;
-            }
-            GUILayout.EndHorizontal();
-            GUILayout.EndScrollView();
-        }
-
-        private void DrawThumb(GameObject p)
-        {
-            GUILayout.BeginVertical(GUILayout.Width(thumbSize + 8));
-            var tex = AssetPreview.GetAssetPreview(p) ?? AssetPreview.GetMiniThumbnail(p);
-            if (GUILayout.Button(tex, GUILayout.Width(thumbSize), GUILayout.Height(thumbSize)))
-            {
-                if (owner != null) { owner.targetPrefab = p; owner.Repaint(); }
-            }
-            GUILayout.Label(p.name, EditorStyles.miniLabel, GUILayout.Width(thumbSize + 8));
-            GUILayout.EndVertical();
-        }
-
-        private void Refresh()
-        {
-            var guids = AssetDatabase.FindAssets("t:Prefab");
-            var all = guids.Select(g => AssetDatabase.GUIDToAssetPath(g))
-                           .Select(p => AssetDatabase.LoadAssetAtPath<GameObject>(p))
-                           .Where(x => x != null);
-            if (!string.IsNullOrEmpty(search))
-                all = all.Where(x => x.name.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0);
-            prefabs = all.ToList();
-        }
-    }
-
-    // -------- Skybox library window --------
-    private class SkyboxLibraryWindow : EditorWindow
-    {
-        private string search = "";
-        private float thumbSize = 96f;
-        private Vector2 scroll;
-        private List<Material> mats = new List<Material>();
-        private PlaceholderSwitcher owner;
-
-        public void Init(PlaceholderSwitcher o) { owner = o; Refresh(); }
-
-        private void OnGUI()
-        {
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Skybox Library", EditorStyles.boldLabel);
-            GUILayout.FlexibleSpace();
-            GUILayout.Label("Thumb Size", GUILayout.Width(70));
-            thumbSize = GUILayout.HorizontalSlider(thumbSize, 48f, 196f, GUILayout.Width(160));
-            GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Search", GUILayout.Width(50));
-            var ns = GUILayout.TextField(search);
-            if (ns != search) { search = ns; Refresh(); }
-            if (GUILayout.Button("Refresh", GUILayout.Width(80))) Refresh();
-            GUILayout.EndHorizontal();
-
-            scroll = GUILayout.BeginScrollView(scroll);
-            float col = Mathf.Max(1, Mathf.Floor(position.width / (thumbSize + 16f)));
-            int perRow = Mathf.Clamp((int)col, 1, 8);
-
-            int i = 0;
-            GUILayout.BeginHorizontal();
-            foreach (var m in mats)
-            {
-                if (i > 0 && i % perRow == 0)
-                {
-                    GUILayout.EndHorizontal();
-                    GUILayout.BeginHorizontal();
-                }
-                DrawThumb(m);
-                i++;
-            }
-            GUILayout.EndHorizontal();
-            GUILayout.EndScrollView();
-        }
-
-        private void DrawThumb(Material m)
-        {
-            GUILayout.BeginVertical(GUILayout.Width(thumbSize + 8));
-            var tex = AssetPreview.GetAssetPreview(m) ?? AssetPreview.GetMiniThumbnail(m);
-            if (GUILayout.Button(tex, GUILayout.Width(thumbSize), GUILayout.Height(thumbSize)))
-            {
-                if (owner != null) { owner.manualSkyboxMat = m; owner.viewerBg = ViewerBg.ManualSkybox; owner.ApplyViewerBackground(); owner.Repaint(); }
-            }
-            GUILayout.Label(m.name, EditorStyles.miniLabel, GUILayout.Width(thumbSize + 8));
-            GUILayout.EndVertical();
-        }
-
-        private void Refresh()
-        {
-            string[] guids = AssetDatabase.FindAssets("t:Material");
-            mats = guids.Select(g => AssetDatabase.GUIDToAssetPath(g))
-                        .Select(p => AssetDatabase.LoadAssetAtPath<Material>(p))
-                        .Where(mat => mat != null && mat.shader != null && mat.shader.name.StartsWith("Skybox", StringComparison.OrdinalIgnoreCase))
-                        .Where(mat => string.IsNullOrEmpty(search) || mat.name.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0)
-                        .ToList();
-        }
+        public void Dispose() { GUILayout.EndArea(); }
     }
 }
 #endif
