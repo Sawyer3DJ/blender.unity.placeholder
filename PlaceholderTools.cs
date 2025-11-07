@@ -1,150 +1,121 @@
+#if UNITY_EDITOR
 using System.Collections.Generic;
 using System.Linq;
+using UnityEditor;
 using UnityEngine;
 
 
-// ------------------------------------------------------------
-//  PlaceholderMap: create one via Assets > Create > Placeholder Map
-// ------------------------------------------------------------
-[CreateAssetMenu(fileName = "PlaceholderMap", menuName = "Placeholders/Placeholder Map", order = 0)]
-public class PlaceholderMap : ScriptableObject
+public class PlaceholderSwitcherWindow : EditorWindow
 {
-[System.Serializable]
-public class Entry
+private string prefix = "SS_";                     // e.g. SS_ or ABCD_
+private GameObject targetPrefab;                    // the prefab to place instead
+private string forcedName = "";                    // optional: set all instances to this exact name
+
+
+[MenuItem("Tools/Placeholders/Switcher")] 
+public static void ShowWindow()
 {
-[Tooltip("Names starting with this (e.g. 'SS_swingshot') will be replaced")] public string prefix = "SS_";
-[Tooltip("Prefab to instantiate in place of the placeholder")] public GameObject prefab;
-[Tooltip("Optional: force the new instance name (e.g. '6569')")] public string forcedName = "";
+    var w = GetWindow<PlaceholderSwitcherWindow>(true, "Placeholder Switcher");
+    w.minSize = new Vector2(420, 180);
+    w.Show();
 }
 
-
-public List<Entry> entries = new List<Entry>();
-
-
-
-}
-
-
-// ------------------------------------------------------------
-//  Runtime replacer (optional): attach to a bootstrap GameObject
-//  Only needed if you prefer to swap placeholders at runtime.
-// ------------------------------------------------------------
-public class RuntimePlaceholderReplacer : MonoBehaviour
+private void OnGUI()
 {
-[Tooltip("Mapping from SS_ prefixes to actual prefabs")] public PlaceholderMap map;
-[Tooltip("Replace on Start() and then disable this component")] public bool replaceOnStart = true;
+    GUILayout.Label("Replace Blender placeholders in the open scene(s)", EditorStyles.boldLabel);
+    EditorGUILayout.Space(4);
 
+    prefix = EditorGUILayout.TextField(new GUIContent("Placeholder Prefix", "Names starting with this will be replaced (e.g. 'SS_')"), prefix);
 
-void Start()
-{
-    if (!replaceOnStart || map == null) return;
-    ReplaceAllInScene(map);
-    enabled = false;
-}
-
-public static void ReplaceAllInScene(PlaceholderMap map)
-{
-    if (map == null) return;
-    // Find all active scene objects whose name starts with any configured prefix
-    var all = FindObjectsOfType<Transform>(true).Select(t => t.gameObject);
-    foreach (var go in all)
+    using (new EditorGUILayout.HorizontalScope())
     {
-        var entry = map.entries.FirstOrDefault(e => !string.IsNullOrEmpty(e.prefix) && go.name.StartsWith(e.prefix));
-        if (entry != null && entry.prefab != null)
+        targetPrefab = (GameObject)EditorGUILayout.ObjectField(
+            new GUIContent("Desired Asset (Prefab)", "Pick the prefab you want to use for replacement"),
+            targetPrefab, typeof(GameObject), false);
+    }
+
+    forcedName = EditorGUILayout.TextField(new GUIContent("Forced Name (optional)", "If set, every new instance will get this exact name (e.g. '6569')"), forcedName);
+
+    EditorGUILayout.Space(8);
+
+    using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(prefix) || targetPrefab == null || !IsPrefabAsset(targetPrefab)))
+    {
+        if (GUILayout.Button("Switch Placeholders", GUILayout.Height(32)))
         {
-            Replace(go, entry.prefab, entry.forcedName);
+            SwitchPlaceholders();
         }
     }
-}
 
-private static void Replace(GameObject src, GameObject prefab, string forcedName)
-{
-    var parent = src.transform.parent;
-    var localPos = src.transform.localPosition;
-    var localRot = src.transform.localRotation;
-    var localScale = src.transform.localScale;
-    var layer = src.layer;
-    var tag = src.tag;
-    var active = src.activeSelf;
-
-    var instance = Instantiate(prefab);
-    instance.transform.SetParent(parent, false);
-    instance.transform.localPosition = localPos;
-    instance.transform.localRotation = localRot;
-    instance.transform.localScale = localScale;
-    instance.layer = layer;
-    try { instance.tag = tag; } catch { }
-    if (!string.IsNullOrEmpty(forcedName)) instance.name = forcedName;
-    instance.SetActive(active);
-
-    DestroyImmediate(src);
-}
-
-
-
-}
-
-
-#if UNITY_EDITOR
-using UnityEditor;
-
-
-// ------------------------------------------------------------
-//  Editor replacer: Tools > Placeholders > Replace In Open Scenes
-// ------------------------------------------------------------
-public static class EditorPlaceholderReplacer
-{
-[MenuItem("Tools/Placeholders/Replace In Open Scenes")]
-public static void ReplaceInOpenScenes()
-{
-var map = FindPlaceholderMapAsset();
-if (map == null)
-{
-EditorUtility.DisplayDialog("Placeholder Map not found",
-"Create one via Assets > Create > Placeholders > Placeholder Map and select it in Project view.",
-"OK");
-return;
-}
-
-
-    var sceneObjects = UnityEngine.Object.FindObjectsOfType<Transform>(true)
-        .Select(t => t.gameObject)
-        .Where(go => go.scene.IsValid());
-
-    var toReplace = new List<(GameObject go, PlaceholderMap.Entry entry)>();
-    foreach (var go in sceneObjects)
+    // Light help / validation
+    if (targetPrefab != null && !IsPrefabAsset(targetPrefab))
     {
-        var entry = map.entries.FirstOrDefault(e => !string.IsNullOrEmpty(e.prefix) && go.name.StartsWith(e.prefix));
-        if (entry != null && entry.prefab != null)
-            toReplace.Add((go, entry));
+        EditorGUILayout.HelpBox("Selected object is not a Prefab asset. Drag a prefab from the Project window.", MessageType.Warning);
     }
-
-    if (toReplace.Count == 0)
+    else if (string.IsNullOrEmpty(prefix))
     {
-        EditorUtility.DisplayDialog("Nothing to replace", "No GameObjects starting with any configured prefix were found.", "OK");
+        EditorGUILayout.HelpBox("Enter a placeholder prefix (e.g. 'SS_').", MessageType.Info);
+    }
+}
+
+private static bool IsPrefabAsset(GameObject go)
+{
+    var t = PrefabUtility.GetPrefabAssetType(go);
+    return t != PrefabAssetType.NotAPrefab && t != PrefabAssetType.MissingAsset;
+}
+
+private void SwitchPlaceholders()
+{
+    // Gather targets across all open scenes
+    var sceneObjects = Resources.FindObjectsOfTypeAll<Transform>()
+        .Select(t => t.gameObject)
+        .Where(go => go != null && go.scene.IsValid() && go.name.StartsWith(prefix))
+        .ToList();
+
+    if (sceneObjects.Count == 0)
+    {
+        EditorUtility.DisplayDialog("No matches",
+            $"No GameObjects starting with '{prefix}' were found in open scenes.",
+            "OK");
         return;
     }
 
+    if (!EditorUtility.DisplayDialog("Confirm Replacement",
+            $"Replace {sceneObjects.Count} object(s) that start with '{prefix}'?\n\nPrefab: {targetPrefab.name}",
+            "Replace", "Cancel"))
+        return;
+
     Undo.IncrementCurrentGroup();
     int group = Undo.GetCurrentGroup();
-    Undo.SetCurrentGroupName("Replace Placeholders");
+    Undo.SetCurrentGroupName("Switch Placeholders");
 
-    int replaced = 0;
-    foreach (var (go, entry) in toReplace)
+    try
     {
-        ReplaceOne(go, entry);
-        replaced++;
+        int i = 0;
+        foreach (var src in sceneObjects)
+        {
+            i++;
+            if (EditorUtility.DisplayCancelableProgressBar("Switching Placeholders",
+                    $"Replacing {i}/{sceneObjects.Count}: {src.name}", (float)i / sceneObjects.Count))
+            {
+                break;
+            }
+
+            ReplaceOne(src, targetPrefab, forcedName);
+        }
+    }
+    finally
+    {
+        EditorUtility.ClearProgressBar();
+        Undo.CollapseUndoOperations(group);
     }
 
-    Undo.CollapseUndoOperations(group);
-    EditorUtility.DisplayDialog("Placeholders replaced", $"Replaced {replaced} object(s).", "Nice");
+    EditorUtility.DisplayDialog("Done",
+        "Placeholder replacement complete.", "Nice");
 }
 
-private static void ReplaceOne(GameObject src, PlaceholderMap.Entry entry)
+private static void ReplaceOne(GameObject src, GameObject prefab, string forcedName)
 {
-    var prefab = entry.prefab;
-    if (prefab == null) return;
-
+    // Cache source data
     var parent = src.transform.parent;
     var localPos = src.transform.localPosition;
     var localRot = src.transform.localRotation;
@@ -154,9 +125,8 @@ private static void ReplaceOne(GameObject src, PlaceholderMap.Entry entry)
     var active = src.activeSelf;
     var staticFlags = GameObjectUtility.GetStaticEditorFlags(src);
 
-    // Create prefab instance with connection preserved
-    var scene = src.scene;
-    var instanceObj = PrefabUtility.InstantiatePrefab(prefab, scene) as GameObject;
+    // Instantiate prefab as a connected instance in the same scene
+    var instanceObj = PrefabUtility.InstantiatePrefab(prefab, src.scene) as GameObject;
     if (instanceObj == null)
     {
         Debug.LogError($"Failed to instantiate prefab for {src.name}");
@@ -164,35 +134,24 @@ private static void ReplaceOne(GameObject src, PlaceholderMap.Entry entry)
     }
 
     Undo.RegisterCreatedObjectUndo(instanceObj, "Create replacement");
+
+    // Reparent & restore transform
     instanceObj.transform.SetParent(parent, false);
     instanceObj.transform.localPosition = localPos;
     instanceObj.transform.localRotation = localRot;
     instanceObj.transform.localScale = localScale;
+
+    // Restore metadata
     instanceObj.layer = layer;
-    try { instanceObj.tag = tag; } catch { }
+    try { instanceObj.tag = tag; } catch { /* tag may be missing on prefab */ }
     GameObjectUtility.SetStaticEditorFlags(instanceObj, staticFlags);
     instanceObj.SetActive(active);
 
-    if (!string.IsNullOrEmpty(entry.forcedName))
-        instanceObj.name = entry.forcedName;
+    if (!string.IsNullOrEmpty(forcedName))
+        instanceObj.name = forcedName;
 
+    // Remove the placeholder
     Undo.DestroyObjectImmediate(src);
-}
-
-private static PlaceholderMap FindPlaceholderMapAsset()
-{
-    // Prefer currently selected PlaceholderMap in Project view
-    var selected = Selection.activeObject as PlaceholderMap;
-    if (selected != null) return selected;
-
-    // Otherwise, try to find one anywhere in the project (first match)
-    var guids = AssetDatabase.FindAssets("t:PlaceholderMap");
-    if (guids != null && guids.Length > 0)
-    {
-        var path = AssetDatabase.GUIDToAssetPath(guids[0]);
-        return AssetDatabase.LoadAssetAtPath<PlaceholderMap>(path);
-    }
-    return null;
 }
 
 
