@@ -33,7 +33,7 @@ public class PlaceholderSwitcher : EditorWindow
     // ---------- Scale ----------
     private enum ScaleMode { PlaceholderScale, NewScale, SeedValue }
     [SerializeField] private ScaleMode scaleMode = ScaleMode.PlaceholderScale;
-    [SerializeField] private Vector3 scaleXYZ = Vector3.one;  // always visible; in Seed mode becomes an offset added to the random uniform
+    [SerializeField] private Vector3 scaleXYZ = Vector3.one;  // always visible; in Seed mode adds to the random uniform
     [SerializeField] private int scaleSeed = 321;             // 1..10000 (seeded uniform)
     [SerializeField] private float scaleRandomMin = 0.8f;     // clamp min
     [SerializeField] private float scaleRandomMax = 1.2f;     // clamp max
@@ -372,7 +372,7 @@ public class PlaceholderSwitcher : EditorWindow
                 break;
             case PreviewBg.BasicScene:
                 cam.clearFlags = CameraClearFlags.Color;
-                cam.backgroundColor = new Color(0.58f, 0.63f, 0.70f, 1f); // neutral "Unity-like" flat color
+                cam.backgroundColor = new Color(0.58f, 0.63f, 0.70f, 1f);
                 if (sky) sky.enabled = false;
                 break;
             case PreviewBg.White:
@@ -554,6 +554,86 @@ public class PlaceholderSwitcher : EditorWindow
         }
     }
 
+    // ======= MISSING HELPERS (now added) =======
+
+    private Quaternion GetPreviewObjectRotation(Transform t)
+    {
+        switch (rotationMode)
+        {
+            case RotationMode.PlaceholderRotation:
+                return t.rotation * Quaternion.Euler(rotationEuler);
+            case RotationMode.NewRotation:
+                return Quaternion.Euler(rotationEuler);
+            case RotationMode.SeedValueOnY:
+            {
+                int hash = (t.GetInstanceID() ^ (t.name.GetHashCode() << 1));
+                var rng = new System.Random(unchecked((rotationSeed * 73856093) ^ hash));
+                float y = (float)(rng.NextDouble() * 360.0);
+                return Quaternion.Euler(rotationEuler.x, y + rotationEuler.y, rotationEuler.z);
+            }
+            default:
+                return t.rotation;
+        }
+    }
+
+    private Vector3 GetPreviewObjectScale(Transform t)
+    {
+        switch (scaleMode)
+        {
+            case ScaleMode.PlaceholderScale:
+                return Vector3.Scale(t.localScale, SafeVector3(scaleXYZ, 0.0001f));
+            case ScaleMode.NewScale:
+                return SafeVector3(scaleXYZ, 0.0001f);
+            case ScaleMode.SeedValue:
+            {
+                int hash = (t.GetInstanceID() ^ (t.name.GetHashCode() << 1));
+                var rng = new System.Random(unchecked((scaleSeed * 19349663) ^ hash));
+                float minv = SafePositive(scaleRandomMin, 0.0001f);
+                float maxv = SafePositive(scaleRandomMax, 0.0001f);
+                if (maxv < minv) { var tmp = minv; minv = maxv; maxv = tmp; }
+                float f = Mathf.Lerp(minv, maxv, (float)rng.NextDouble());
+                return new Vector3(f, f, f) + scaleXYZ; // seed uniform + XYZ offset
+            }
+            default:
+                return t.localScale;
+        }
+    }
+
+    private Vector3 GetPreviewPivot(List<GameObject> candidates)
+    {
+        switch (pivotMode)
+        {
+            case PivotMode.Parent:
+                if (explicitParent) return explicitParent.position;
+                if (groupWithEmptyParent)
+                    return GetEmptyParentPositionForScene(candidates, emptyParentLocation, manualEmptyParentPosition);
+                goto case PivotMode.BoundsCenter;
+
+            case PivotMode.FirstObject:
+                return candidates.Count > 0 && candidates[0] ? candidates[0].transform.position : Vector3.zero;
+
+            case PivotMode.BoundsCenter:
+                if (candidates.Count == 0) return Vector3.zero;
+                var b = new Bounds(candidates[0].transform.position, Vector3.zero);
+                foreach (var go in candidates)
+                {
+                    if (!go) continue;
+                    var r = go.GetComponent<Renderer>();
+                    if (r) b.Encapsulate(r.bounds);
+                    else b.Encapsulate(new Bounds(go.transform.position, Vector3.zero));
+                }
+                return b.center;
+
+            case PivotMode.WorldOrigin:
+                return Vector3.zero;
+
+            case PivotMode.SelectedObject:
+                if (Selection.activeTransform) return Selection.activeTransform.position;
+                return Vector3.zero;
+        }
+        return Vector3.zero;
+    }
+
     private void HandleDragAndDrop(Rect rect)
     {
         var evt = Event.current;
@@ -599,9 +679,6 @@ public class PlaceholderSwitcher : EditorWindow
         var count = Resources.FindObjectsOfTypeAll<Transform>()
             .Count(t => t && t.gameObject.scene.IsValid() && t.gameObject.name.StartsWith(prefix));
 
-        // Enable when:
-        //  - exactly 1 placeholder, OR
-        //  - many placeholders AND user intends to Combine
         if (count == 1) return true;
         if (count > 1 && combineIntoOne) return true;
 
@@ -611,7 +688,6 @@ public class PlaceholderSwitcher : EditorWindow
 
     private void SaveFromPreview()
     {
-        // identical to earlier, but only allowed when CanSaveFromPreview()
         var candidates = Resources.FindObjectsOfTypeAll<Transform>()
             .Select(t => t ? t.gameObject : null)
             .Where(go => go != null && go.scene.IsValid() && go.name.StartsWith(prefix))
@@ -688,7 +764,7 @@ public class PlaceholderSwitcher : EditorWindow
                         float maxv = SafePositive(scaleRandomMax, 0.0001f);
                         if (maxv < minv) { var tmp = minv; minv = maxv; maxv = tmp; }
                         float f = Mathf.Lerp(minv, maxv, (float)rng.NextDouble());
-                        finalScale = new Vector3(f, f, f) + scaleXYZ; // seed uniform + XYZ offset (per request)
+                        finalScale = new Vector3(f, f, f) + scaleXYZ;
                         break;
                     }
                 }
@@ -703,7 +779,7 @@ public class PlaceholderSwitcher : EditorWindow
             GameObject toSave;
             if (candidates.Count == 1 && !combineIntoOne)
             {
-                toSave = temps[0]; // single
+                toSave = temps[0];
             }
             else
             {
@@ -735,7 +811,6 @@ public class PlaceholderSwitcher : EditorWindow
         string path = EditorUtility.OpenFilePanel("Load 3D Asset", "", "fbx,obj,prefab,gltf,glb");
         if (string.IsNullOrEmpty(path)) return;
 
-        // Copy into project under Assets/ImportedByPlaceholderSwitcher/
         string importDir = "Assets/ImportedByPlaceholderSwitcher";
         if (!AssetDatabase.IsValidFolder(importDir))
         {
@@ -745,7 +820,6 @@ public class PlaceholderSwitcher : EditorWindow
         string fileName = Path.GetFileName(path);
         string destPath = Path.Combine(importDir, fileName).Replace("\\", "/");
 
-        // If file already exists, overwrite
         FileUtil.ReplaceFile(path, destPath);
         AssetDatabase.ImportAsset(destPath);
 
@@ -762,7 +836,7 @@ public class PlaceholderSwitcher : EditorWindow
     }
 
     // ------------------------------------------------------
-    // Core logic (unchanged behaviour except for Seed scale offset)
+    // Core logic
     // ------------------------------------------------------
     private static bool IsPrefabAsset(GameObject go)
     {
