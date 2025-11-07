@@ -28,7 +28,7 @@ public class PlaceholderSwitcher : EditorWindow
     private enum ScaleMode { PlaceholderScale, NewScale, SeedValue }
     [SerializeField] private ScaleMode scaleMode = ScaleMode.PlaceholderScale;
     [SerializeField] private Vector3 scaleXYZ = Vector3.one;       // per-axis UI value
-    [SerializeField] private int scaleSeed = 321;                  // 1..1000 (used only in SeedValue)
+    [SerializeField] private int scaleSeed = 321;                  // 1..10000 (used only in SeedValue)
     [SerializeField] private float scaleRandomMin = 0.8f;          // min uniform factor
     [SerializeField] private float scaleRandomMax = 1.2f;          // max uniform factor
 
@@ -97,6 +97,8 @@ public class PlaceholderSwitcher : EditorWindow
     {
         previewUtil?.Cleanup();
         if (fallbackMat != null) DestroyImmediate(fallbackMat);
+        previewUtil = null;
+        fallbackMat = null;
     }
 
     // ------------------------------------------------------
@@ -109,7 +111,7 @@ public class PlaceholderSwitcher : EditorWindow
 
         // -------- Left: Preview column --------
         EditorGUILayout.BeginVertical(GUILayout.Width(Mathf.Max(position.width * 0.42f, 360f)));
-        DrawPreviewArea(); // includes background/selectors + controls under the viewport
+        DrawPreviewArea(); // includes background select + controls under the viewport
         EditorGUILayout.EndVertical();
 
         // -------- Right: Controls column --------
@@ -137,14 +139,16 @@ public class PlaceholderSwitcher : EditorWindow
         rotationMode = (RotationMode)EditorGUILayout.EnumPopup(new GUIContent("Rotation Mode"), rotationMode);
         if (rotationMode == RotationMode.PlaceholderRotation || rotationMode == RotationMode.NewRotation)
         {
-            rotationEuler = EditorGUILayout.Vector3Field(new GUIContent(rotationMode == RotationMode.PlaceholderRotation ? "Rotation (adds to placeholder)" : "Rotation (new rotation)"), rotationEuler);
+            rotationEuler = EditorGUILayout.Vector3Field(
+                new GUIContent(rotationMode == RotationMode.PlaceholderRotation ? "Rotation (adds to placeholder)" : "Rotation (new rotation)"),
+                rotationEuler);
         }
         else // SeedValueOnY
         {
             using (new EditorGUI.IndentLevelScope())
             {
                 EditorGUILayout.BeginHorizontal();
-                rotationSeed = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Random rotation seed (Y)"), rotationSeed), 1, 10000);
+                rotationSeed = SafeClampInt(EditorGUILayout.IntField(new GUIContent("Random rotation seed (Y)"), rotationSeed), 1, 10000);
                 if (GUILayout.Button("Randomise Seed", GUILayout.Width(130)))
                 {
                     rotationSeed = UnityEngine.Random.Range(1, 10001);
@@ -162,19 +166,25 @@ public class PlaceholderSwitcher : EditorWindow
 
         if (scaleMode == ScaleMode.PlaceholderScale || scaleMode == ScaleMode.NewScale)
         {
-            scaleXYZ = EditorGUILayout.Vector3Field(new GUIContent(scaleMode == ScaleMode.PlaceholderScale ? "Scale (multiplies placeholder scale)" : "Scale (new)"), scaleXYZ);
+            scaleXYZ = SafeVector3(EditorGUILayout.Vector3Field(
+                new GUIContent(scaleMode == ScaleMode.PlaceholderScale ? "Scale (multiplies placeholder scale)" : "Scale (new)"),
+                scaleXYZ), 0.0001f);
         }
         else // SeedValue
         {
             using (new EditorGUI.IndentLevelScope())
             {
-                scaleSeed = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Random scaling seed"), scaleSeed), 1, 1000);
+                scaleSeed = SafeClampInt(EditorGUILayout.IntField(new GUIContent("Random scaling seed"), scaleSeed), 1, 10000);
+
                 EditorGUILayout.BeginHorizontal();
-                scaleRandomMin = EditorGUILayout.FloatField(new GUIContent("Random Scaling threshold (min)"), scaleRandomMin);
-                scaleRandomMax = EditorGUILayout.FloatField(new GUIContent("max"), scaleRandomMax);
+                scaleRandomMin = SafePositive(EditorGUILayout.FloatField(new GUIContent("Random Scaling threshold (min)"), scaleRandomMin), 0.0001f);
+                scaleRandomMax = SafePositive(EditorGUILayout.FloatField(new GUIContent("max"), scaleRandomMax), 0.0001f);
                 EditorGUILayout.EndHorizontal();
-                scaleRandomMin = Mathf.Max(0.0001f, scaleRandomMin);
-                scaleRandomMax = Mathf.Max(scaleRandomMin, scaleRandomMax);
+
+                if (!float.IsFinite(scaleRandomMin)) scaleRandomMin = 0.0001f;
+                if (!float.IsFinite(scaleRandomMax)) scaleRandomMax = 1f;
+                if (scaleRandomMax < scaleRandomMin) (scaleRandomMin, scaleRandomMax) = (scaleRandomMax, scaleRandomMin);
+
                 EditorGUILayout.HelpBox("Generates a single uniform scale factor (applied to X/Y/Z together) per object using the seed.", MessageType.Info);
             }
         }
@@ -207,7 +217,7 @@ public class PlaceholderSwitcher : EditorWindow
 
         EditorGUILayout.Space(6);
 
-        // Combine
+        // Combine + Save
         GUILayout.Label("Combine / Save", EditorStyles.boldLabel);
         combineIntoOne = EditorGUILayout.Toggle(new GUIContent("Combine objects into one", "Static content only"), combineIntoOne);
         using (new EditorGUI.DisabledScope(!combineIntoOne))
@@ -216,13 +226,14 @@ public class PlaceholderSwitcher : EditorWindow
             pivotMode = (PivotMode)EditorGUILayout.EnumPopup(new GUIContent("Pivot (also affects preview centering)"), pivotMode);
             if ((pivotMode == PivotMode.SelectedObject) && Selection.activeTransform == null)
                 EditorGUILayout.HelpBox("Select a Transform in the hierarchy to use as the pivot.", MessageType.Info);
-            EditorGUI.indentLevel--;
+
             if (combineIntoOne)
             {
                 EditorGUILayout.HelpBox(
                     "Combining meshes creates ONE renderer/mesh. Per-object scripts, colliders, and triggers are lost.\n" +
                     "Use Static Batching if you need separate interactivity.", MessageType.Warning);
             }
+            EditorGUI.indentLevel--;
         }
 
         // Move
@@ -281,8 +292,12 @@ public class PlaceholderSwitcher : EditorWindow
 
         // Background selector + small tips
         EditorGUILayout.Space(4);
-        previewBackground = (PreviewBg)EditorGUILayout.EnumPopup(new GUIContent("Viewer Background"), previewBackground);
-        ApplyPreviewBackground();
+        var newBg = (PreviewBg)EditorGUILayout.EnumPopup(new GUIContent("Viewer Background"), previewBackground);
+        if (newBg != previewBackground)
+        {
+            previewBackground = newBg;
+            ApplyPreviewBackground();
+        }
         EditorGUILayout.LabelField("Controls", "LMB: Orbit   MMB: Pan   Wheel: Zoom", EditorStyles.miniLabel);
     }
 
@@ -413,9 +428,7 @@ public class PlaceholderSwitcher : EditorWindow
                 else if (Event.current.button == 2) // pan
                 {
                     previewUserAdjusted = true;
-                    // Convert mouse delta to world-ish units relative to distance
                     float panScale = previewDistance * 0.0025f;
-                    // Pan along camera right/up
                     var right = Quaternion.Euler(0, previewYaw, 0) * Vector3.right;
                     var up = Vector3.up;
                     previewPivotOffset += (-right * Event.current.delta.x + up * Event.current.delta.y) * panScale;
@@ -440,9 +453,9 @@ public class PlaceholderSwitcher : EditorWindow
             case RotationMode.NewRotation:
                 return Quaternion.Euler(rotationEuler);
             case RotationMode.SeedValueOnY:
-                // Deterministic per object: seed + a stable hash of path/name
+                // Deterministic per object: seed + stable hash => per-object variation
                 int hash = (t.GetInstanceID() ^ (t.name.GetHashCode() << 1));
-                var rng = new System.Random( (rotationSeed * 73856093) ^ hash );
+                var rng = new System.Random( unchecked((rotationSeed * 73856093) ^ hash) );
                 float y = (float)(rng.NextDouble() * 360.0);
                 return Quaternion.Euler(0f, y, 0f);
             default:
@@ -455,16 +468,19 @@ public class PlaceholderSwitcher : EditorWindow
         switch (scaleMode)
         {
             case ScaleMode.PlaceholderScale:
-                return Vector3.Scale(t.localScale, scaleXYZ);
+                return Vector3.Scale(t.localScale, SafeVector3(scaleXYZ, 0.0001f));
             case ScaleMode.NewScale:
-                return scaleXYZ;
+                return SafeVector3(scaleXYZ, 0.0001f);
             case ScaleMode.SeedValue:
-                {
-                    int hash = (t.GetInstanceID() ^ (t.name.GetHashCode() << 1));
-                    var rng = new System.Random((scaleSeed * 19349663) ^ hash);
-                    float f = Mathf.Lerp(scaleRandomMin, scaleRandomMax, (float)rng.NextDouble());
-                    return Vector3.one * f;
-                }
+            {
+                int hash = (t.GetInstanceID() ^ (t.name.GetHashCode() << 1));
+                var rng = new System.Random( unchecked((scaleSeed * 19349663) ^ hash) );
+                float minv = SafePositive(scaleRandomMin, 0.0001f);
+                float maxv = SafePositive(scaleRandomMax, 0.0001f);
+                if (maxv < minv) { var tmp = minv; minv = maxv; maxv = tmp; }
+                float f = Mathf.Lerp(minv, maxv, (float)rng.NextDouble());
+                return new Vector3(f, f, f);
+            }
             default:
                 return t.localScale;
         }
@@ -519,7 +535,7 @@ public class PlaceholderSwitcher : EditorWindow
         var candidates = Resources.FindObjectsOfTypeAll<Transform>()
             .Select(t => t ? t.gameObject : null)
             .Where(go => go != null && go.scene.IsValid() && go.name.StartsWith(prefix))
-            .OrderBy(go => go.name) // stable order for seeded ops
+            .OrderBy(go => go.name) // stable order for seeded ops & naming
             .ToList();
 
         if (candidates.Count == 0)
@@ -729,7 +745,7 @@ public class PlaceholderSwitcher : EditorWindow
             case RotationMode.SeedValueOnY:
                 {
                     int hash = (src.GetInstanceID() ^ (src.name.GetHashCode() << 1));
-                    var rng = new System.Random((rotSeed * 73856093) ^ hash);
+                    var rng = new System.Random(unchecked((rotSeed * 73856093) ^ hash));
                     float y = (float)(rng.NextDouble() * 360.0);
                     finalRot = Quaternion.Euler(0f, y, 0f);
                 }
@@ -742,17 +758,20 @@ public class PlaceholderSwitcher : EditorWindow
         {
             default:
             case ScaleMode.PlaceholderScale:
-                finalScale = Vector3.Scale(localScale, scXYZ);
+                finalScale = Vector3.Scale(localScale, SafeVector3(scXYZ, 0.0001f));
                 break;
             case ScaleMode.NewScale:
-                finalScale = scXYZ;
+                finalScale = SafeVector3(scXYZ, 0.0001f);
                 break;
             case ScaleMode.SeedValue:
                 {
                     int hash = (src.GetInstanceID() ^ (src.name.GetHashCode() << 1));
-                    var rng = new System.Random((scSeed * 19349663) ^ hash);
-                    float f = Mathf.Lerp(scMin, scMax, (float)rng.NextDouble());
-                    finalScale = Vector3.one * f; // uniform XYZ
+                    var rng = new System.Random(unchecked((scSeed * 19349663) ^ hash));
+                    float minv = SafePositive(scMin, 0.0001f);
+                    float maxv = SafePositive(scMax, 0.0001f);
+                    if (maxv < minv) { var tmp = minv; minv = maxv; maxv = tmp; }
+                    float f = Mathf.Lerp(minv, maxv, (float)rng.NextDouble());
+                    finalScale = new Vector3(f, f, f);
                 }
                 break;
         }
@@ -902,6 +921,28 @@ public class PlaceholderSwitcher : EditorWindow
         }
         foreach (var n in names) { var t = Type.GetType(n); if (t != null) return t; }
         return null;
+    }
+
+    // -------- Helpers: numeric safety --------
+    private static int SafeClampInt(int v, int min, int max)
+    {
+        if (v < min) return min;
+        if (v > max) return max;
+        return v;
+    }
+
+    private static float SafePositive(float v, float min)
+    {
+        if (!float.IsFinite(v) || v < min) return min;
+        return v;
+    }
+
+    private static Vector3 SafeVector3(Vector3 v, float componentMin)
+    {
+        v.x = SafePositive(v.x, componentMin);
+        v.y = SafePositive(v.y, componentMin);
+        v.z = SafePositive(v.z, componentMin);
+        return v;
     }
 
     // Utility for transforming bounds
