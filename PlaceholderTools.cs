@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 
 public class PlaceholderSwitcherWindow : EditorWindow
@@ -12,11 +13,17 @@ private GameObject targetPrefab;                    // the prefab to place inste
 private string forcedName = "";                    // optional: set all instances to this exact name
 
 
+// New options
+private bool keepRotation = true;
+private bool keepScale = true;
+private bool groupWithEmptyParent = false;
+private string groupParentName = "Imported Placeholders";
+
 [MenuItem("Tools/Placeholders/Switcher")] 
 public static void ShowWindow()
 {
     var w = GetWindow<PlaceholderSwitcherWindow>(true, "Placeholder Switcher");
-    w.minSize = new Vector2(420, 180);
+    w.minSize = new Vector2(460, 240);
     w.Show();
 }
 
@@ -25,6 +32,7 @@ private void OnGUI()
     GUILayout.Label("Replace Blender placeholders in the open scene(s)", EditorStyles.boldLabel);
     EditorGUILayout.Space(4);
 
+    // Inputs
     prefix = EditorGUILayout.TextField(new GUIContent("Placeholder Prefix", "Names starting with this will be replaced (e.g. 'SS_')"), prefix);
 
     using (new EditorGUILayout.HorizontalScope())
@@ -35,6 +43,18 @@ private void OnGUI()
     }
 
     forcedName = EditorGUILayout.TextField(new GUIContent("Forced Name (optional)", "If set, every new instance will get this exact name (e.g. '6569')"), forcedName);
+
+    // Options
+    EditorGUILayout.Space(4);
+    keepRotation = EditorGUILayout.Toggle(new GUIContent("Keep rotation", "If enabled, the replacement keeps the placeholder's local rotation"), keepRotation);
+    keepScale = EditorGUILayout.Toggle(new GUIContent("Keep scale", "If enabled, the replacement keeps the placeholder's local scale"), keepScale);
+
+    EditorGUILayout.Space(2);
+    groupWithEmptyParent = EditorGUILayout.Toggle(new GUIContent("Group with empty parent (optional)", "Create/use a shared empty parent and place all new instances under it"), groupWithEmptyParent);
+    using (new EditorGUI.DisabledScope(!groupWithEmptyParent))
+    {
+        groupParentName = EditorGUILayout.TextField(new GUIContent("Empty Parent Name", "Name of the grouping parent GameObject"), groupParentName);
+    }
 
     EditorGUILayout.Space(8);
 
@@ -80,9 +100,29 @@ private void SwitchPlaceholders()
     }
 
     if (!EditorUtility.DisplayDialog("Confirm Replacement",
-            $"Replace {sceneObjects.Count} object(s) that start with '{prefix}'?\n\nPrefab: {targetPrefab.name}",
-            "Replace", "Cancel"))
-        return;
+            $"Replace {sceneObjects.Count} object(s) that start with '{prefix}'?
+
+
+
+Prefab: {targetPrefab.name}
+Keep rotation: {keepRotation}
+Keep scale: {keepScale}
+Group with empty parent: {groupWithEmptyParent}",
+"Replace", "Cancel"))
+return;
+
+
+    // Optional: create/find grouping parent per scene
+    var parentByScene = new Dictionary<Scene, Transform>();
+    if (groupWithEmptyParent)
+    {
+        foreach (var s in Enumerable.Range(0, SceneManager.sceneCount).Select(SceneManager.GetSceneAt))
+        {
+            if (!s.IsValid() || !s.isLoaded) continue;
+            var parent = FindOrCreateGroupParentInScene(s, groupParentName);
+            parentByScene[s] = parent;
+        }
+    }
 
     Undo.IncrementCurrentGroup();
     int group = Undo.GetCurrentGroup();
@@ -100,7 +140,14 @@ private void SwitchPlaceholders()
                 break;
             }
 
-            ReplaceOne(src, targetPrefab, forcedName);
+            Transform groupingParent = null;
+            if (groupWithEmptyParent)
+            {
+                if (parentByScene.TryGetValue(src.scene, out var p) && p != null)
+                    groupingParent = p;
+            }
+
+            ReplaceOne(src, targetPrefab, forcedName, keepRotation, keepScale, groupingParent);
         }
     }
     finally
@@ -109,11 +156,25 @@ private void SwitchPlaceholders()
         Undo.CollapseUndoOperations(group);
     }
 
-    EditorUtility.DisplayDialog("Done",
-        "Placeholder replacement complete.", "Nice");
+    EditorUtility.DisplayDialog("Done", "Placeholder replacement complete.", "Nice");
 }
 
-private static void ReplaceOne(GameObject src, GameObject prefab, string forcedName)
+private static Transform FindOrCreateGroupParentInScene(Scene scene, string parentName)
+{
+    // Try to find an existing root object with this name in the scene
+    foreach (var root in scene.GetRootGameObjects())
+    {
+        if (root != null && root.name == parentName)
+            return root.transform;
+    }
+    // Create a new root object
+    var go = new GameObject(parentName);
+    Undo.RegisterCreatedObjectUndo(go, "Create Group Parent");
+    SceneManager.MoveGameObjectToScene(go, scene);
+    return go.transform;
+}
+
+private static void ReplaceOne(GameObject src, GameObject prefab, string forcedName, bool keepRot, bool keepScl, Transform groupingParent)
 {
     // Cache source data
     var parent = src.transform.parent;
@@ -135,11 +196,14 @@ private static void ReplaceOne(GameObject src, GameObject prefab, string forcedN
 
     Undo.RegisterCreatedObjectUndo(instanceObj, "Create replacement");
 
-    // Reparent & restore transform
-    instanceObj.transform.SetParent(parent, false);
+    // Choose parent: grouping parent overrides, else original parent
+    var newParent = groupingParent != null ? groupingParent : parent;
+    instanceObj.transform.SetParent(newParent, false);
+
+    // Restore transform parts with user control
     instanceObj.transform.localPosition = localPos;
-    instanceObj.transform.localRotation = localRot;
-    instanceObj.transform.localScale = localScale;
+    if (keepRot) instanceObj.transform.localRotation = localRot;
+    if (keepScl) instanceObj.transform.localScale = localScale;
 
     // Restore metadata
     instanceObj.layer = layer;
