@@ -1,0 +1,30 @@
+How to wire it
+
+You already have a DrawPreview(rect) in Module 1. Replace the part where you were drawing cubes/one mesh with:
+
+// BEFORE EndPreview():
+var contentBounds = DrawPreviewContent(r);
+
+// If we got bounds, auto-fit unless the user moved the camera
+if (contentBounds.HasValue && !previewUserAdjusted)
+{
+    var b = contentBounds.Value;
+    var halfFovRad = previewUtil.cameraFieldOfView * 0.5f * Mathf.Deg2Rad;
+    var radius = Mathf.Max(b.extents.x, Mathf.Max(b.extents.y, b.extents.z));
+    previewDistance = Mathf.Clamp(radius / Mathf.Tan(halfFovRad) + radius * 0.25f, 0.4f, 5000f);
+
+    // Center the camera toward the bounds center (still honoring pivot offset)
+    var center = b.center + previewPivotOffset;
+    var cam = previewUtil.camera;
+    var rot = Quaternion.Euler(previewPitch, previewYaw, 0f);
+    cam.transform.position = center + rot * (Vector3.back * previewDistance);
+    cam.transform.rotation = Quaternion.LookRotation(center - cam.transform.position, Vector3.up);
+}
+
+And hook your Recenter button to:
+
+if (GUILayout.Button("Re-center View", GUILayout.Width(120)))
+{
+    ForceRecenterPreview();
+}
+
