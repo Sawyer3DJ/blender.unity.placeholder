@@ -1,0 +1,22 @@
+Where this fits in your pipeline
+
+In your main RunReplace() (Module 3), after you’ve built finalRoot or filled spawned, but before you call your collision rebuild, insert:
+
+
+// Convert to shrub first (if enabled)
+if (finalRoot != null) ApplyShrubIfRequested(finalRoot);
+else ApplyShrubIfRequested(spawned);
+
+// Then your existing collision step:
+if (rebuildInstancedCollision)
+{
+    if (finalRoot != null) TryRebuildInstancedCollision(finalRoot);
+    else foreach (var go in spawned) if (go) TryRebuildInstancedCollision(go);
+}
+
+UI placement
+
+In your right column, directly above your “Rebuild instanced collision” block:
+
+DrawConvertToShrubSection();   // <— Module 8
+// … then your existing collision UI …
