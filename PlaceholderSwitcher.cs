@@ -974,7 +974,7 @@ public class PlaceholderSwitcher : EditorWindow
     private void
     RandomizeAllTransformParameters()
     {
-        RandomiseAllTransformParameters()
+        RandomiseAllTransformParameters();
     }
     
     private void PrepareGroupingParents(List<GameObject> candidates)
