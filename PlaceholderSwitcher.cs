@@ -606,7 +606,7 @@ public class PlaceholderSwitcher : EditorWindow
 
             cam.Render();
             var tex = previewUtil.EndPreview();
-            GUI.DrawTexture(rect, tex, ScaleMode.StretchToFill, false);
+            GUI.DrawTexture(rect, tex, UnityEngine.ScaleMode.StretchToFill, false);
         }
 
         // Overlay when less than 3 chars or 0 matches and no prefab
@@ -959,6 +959,19 @@ public class PlaceholderSwitcher : EditorWindow
     }
 
     // ---------------------- EF helpers ----------------------
+    private void 
+    RandomiseAllTransformParameters()
+    {    
+        rotationSeed =
+    UnityEngine.Random.Range(1, int.MaxValue);
+        scaleSeed =
+    UnityEngine.Random.Range(1, .int.MaxValue);
+        locationSeed = 
+    UnityEngine.Random.Range(1, .int.MaxValue);
+        Repaint();
+    }
+        
+    
     private void PrepareGroupingParents(List<GameObject> candidates)
     {
         _groupParentByScene.Clear();
