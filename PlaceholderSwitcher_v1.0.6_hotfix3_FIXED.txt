@@ -1,5 +1,5 @@
 /*
- * Placeholder Switcher — v1.0.6 (hotfix3)
+ * Placeholder Switcher — v1.0.6 (hotfix2)
  * ------------------------------------------------------------
  * WHAT I FIXED (edit-only; no layout churn)
  * - Fixed a bad merge in ApplyPreviewBackground(): removed stray braces/else and
@@ -1513,4 +1513,5 @@ public class PlaceholderSwitcher : EditorWindow
         Repaint();
     }
 }
+
 #endif
