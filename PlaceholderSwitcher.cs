@@ -960,17 +960,22 @@ public class PlaceholderSwitcher : EditorWindow
 
     // ---------------------- EF helpers ----------------------
     private void 
-    RandomiseAllTransformParameters()
+    RandomizeAllTransformParameters()
     {    
         rotationSeed =
-    UnityEngine.Random.Range(1, int.MaxValue);
+    UnityEngine.Random.Range(1, ,int.MaxValue);
         scaleSeed =
     UnityEngine.Random.Range(1, .int.MaxValue);
-        locationSeed = 
+        locationSeed =
     UnityEngine.Random.Range(1, .int.MaxValue);
         Repaint();
     }
-        
+
+    private void
+    RandomizeAllTransformParameters()
+    {
+        RandomizeAllTransformParameters()
+    }
     
     private void PrepareGroupingParents(List<GameObject> candidates)
     {
